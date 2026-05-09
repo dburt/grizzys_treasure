@@ -1,16 +1,19 @@
 extends Node2D
 
-# Grizzy stands near the Yummy and periodically turns. While "looking", any
-# lemming inside his vision cone that is moving above a small threshold is
-# bounced back to spawn.
+# Grizzy stands beyond the Yummy and periodically turns. He alternates between
+# facing forward (away from the playfield) and backward (toward the lemmings).
+# While "looking", any lemming inside his 150° vision cone moving above a small
+# threshold is bounced back to spawn.
 
 const VISION_RANGE := 720.0
-const VISION_HALF_ANGLE := deg_to_rad(28.0)
+const VISION_HALF_ANGLE := deg_to_rad(75.0)  # 150° total arc
 const CATCH_SPEED := 12.0
 
 @export var look_min := 1.4
 @export var look_max := 3.2
 @export var turn_time := 0.55
+# "Forward" facing — the direction Grizzy points when not watching the lemmings.
+# Backward is the opposite (forward + 180°).
 @export_range(-180.0, 180.0) var initial_facing_degrees := 0.0
 
 @onready var sprite: Sprite2D = $Sprite2D
@@ -24,12 +27,14 @@ var t := 0.0
 var look_duration := 2.0
 var turn_from := 0.0
 var turn_to := 0.0
-var target_next_turn := true  # alternates: random sweep, then targeted, then random...
+var forward_angle := 0.0
+var facing_backward := false
 
 func _ready() -> void:
 	add_to_group("grizzy")
 	sprite.rotation = PI / 2  # sprite art faces "up"; +X is forward in world space
-	facing = deg_to_rad(initial_facing_degrees)
+	forward_angle = deg_to_rad(initial_facing_degrees)
+	facing = forward_angle
 	_build_cone_polygon()
 	_start_looking()
 
@@ -80,28 +85,5 @@ func _start_turning() -> void:
 	state = State.TURNING
 	t = 0.0
 	turn_from = facing
-	if target_next_turn:
-		turn_to = _pick_target_angle()
-	else:
-		var sweep := randf_range(PI / 3.0, 2.0 * PI / 3.0)
-		if randf() < 0.5:
-			sweep = -sweep
-		turn_to = facing + sweep
-	target_next_turn = not target_next_turn
-
-func _pick_target_angle() -> float:
-	var yummy_node := get_tree().get_first_node_in_group("yummy") as Node2D
-	var best: Lemming = null
-	var best_d := INF
-	for node in get_tree().get_nodes_in_group("lemmings"):
-		var l := node as Lemming
-		if l == null:
-			continue
-		var ref_pos: Vector2 = yummy_node.global_position if yummy_node != null else global_position
-		var d := l.global_position.distance_to(ref_pos)
-		if d < best_d:
-			best_d = d
-			best = l
-	if best == null:
-		return facing + randf_range(-PI / 3.0, PI / 3.0)
-	return (best.global_position - global_position).angle()
+	facing_backward = not facing_backward
+	turn_to = forward_angle + (PI if facing_backward else 0.0)

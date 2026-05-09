@@ -15,11 +15,11 @@ offset_bottom = 720.0
 color = Color(0.34, 0.52, 0.32, 1)
 
 [node name="Yummy" parent="." instance=ExtResource("3_yummy")]
-position = Vector2(1200, 360)
+position = Vector2(1080, 360)
 
 [node name="Grizzy" parent="." instance=ExtResource("2_grizzy")]
-position = Vector2(1080, 360)
-initial_facing_degrees = 180.0
+position = Vector2(1200, 360)
+initial_facing_degrees = 0.0
 
 [node name="Lemmings" type="Node2D" parent="."]
 

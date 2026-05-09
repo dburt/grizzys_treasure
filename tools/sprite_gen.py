@@ -87,20 +87,20 @@ def make_lemming(path: str) -> None:
 
     d = ImageDraw.Draw(img)
 
-    cream = (248, 240, 222, 255)
-    cream_dark = (172, 156, 130, 255)
-    fur = (228, 218, 196, 255)
+    blue = (78, 132, 204, 255)
+    blue_dark = (38, 74, 130, 255)
+    belly = (214, 224, 234, 255)  # light bluish-gray stomach
 
     # ears
-    d.ellipse((14, 6, 24, 18), fill=cream, outline=cream_dark, width=2)
-    d.ellipse((40, 6, 50, 18), fill=cream, outline=cream_dark, width=2)
+    d.ellipse((14, 6, 24, 18), fill=blue, outline=blue_dark, width=2)
+    d.ellipse((40, 6, 50, 18), fill=blue, outline=blue_dark, width=2)
     d.ellipse((17, 9, 21, 14), fill=(220, 170, 160, 255))
     d.ellipse((43, 9, 47, 14), fill=(220, 170, 160, 255))
 
     # body
-    d.ellipse((10, 14, 54, 56), fill=cream, outline=cream_dark, width=2)
-    # subtle face fluff
-    d.ellipse((16, 22, 48, 46), fill=fur)
+    d.ellipse((10, 14, 54, 56), fill=blue, outline=blue_dark, width=2)
+    # stomach (top-down belly patch)
+    d.ellipse((16, 22, 48, 46), fill=belly)
 
     # eyes — wide/mischievous
     d.ellipse((20, 22, 28, 32), fill=(255, 255, 255, 255), outline=(40, 30, 20, 255), width=1)
@@ -115,8 +115,8 @@ def make_lemming(path: str) -> None:
     d.arc((26, 36, 38, 44), start=10, end=170, fill=(60, 40, 30, 255), width=2)
 
     # paws hint
-    d.ellipse((18, 48, 26, 56), fill=cream, outline=cream_dark, width=1)
-    d.ellipse((38, 48, 46, 56), fill=cream, outline=cream_dark, width=1)
+    d.ellipse((18, 48, 26, 56), fill=blue, outline=blue_dark, width=1)
+    d.ellipse((38, 48, 46, 56), fill=blue, outline=blue_dark, width=1)
 
     img.save(path)
 
