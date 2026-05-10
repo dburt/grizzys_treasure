@@ -8,6 +8,10 @@ const RESET_DELAY := 1.6
 
 @onready var hud_label: Label = $HUD/Label
 var resetting := false
+# Counts down inside _process while a reset is pending. -1 means idle.
+# We don't use `await get_tree().create_timer().timeout` because that
+# coroutine has been observed not to resume reliably in this scene.
+var _reset_countdown := -1.0
 
 func _ready() -> void:
 	_set_status("Steal the Yummy and bring it home! WASD/arrows to move.")
@@ -45,11 +49,19 @@ func notify_grizzy_won() -> void:
 	_set_status("Grizzy got his Yummy back!  New round starting…")
 	_schedule_reset()
 
+func _process(delta: float) -> void:
+	if _reset_countdown > 0.0:
+		_reset_countdown -= delta
+		if _reset_countdown <= 0.0:
+			_reset_countdown = -1.0
+			_reset_round()
+			resetting = false
+
 func _schedule_reset() -> void:
+	if resetting:
+		return
 	resetting = true
-	await get_tree().create_timer(RESET_DELAY).timeout
-	_reset_round()
-	resetting = false
+	_reset_countdown = RESET_DELAY
 
 func _reset_round() -> void:
 	# Lemmings first so they release any references the jar might check.

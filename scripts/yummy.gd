@@ -84,6 +84,14 @@ func _pick_up_by_grizzy(g: Node2D) -> void:
 	if g.has_method("on_yummy_picked_up"):
 		g.on_yummy_picked_up()
 
+# Direct-call pickup for Grizzy, who can't rely on Area2D body detection
+# alone — moving a StaticBody2D by setting its transform doesn't always
+# refresh the area's overlap list in the same frame.
+func give_to_grizzy(g: Node2D) -> void:
+	if state != State.DROPPED:
+		return
+	_pick_up_by_grizzy(g)
+
 # Lemming was swatted. Yummy decides whether that swat actually drops it
 # (only true if this lemming was the carrier) and lands in place at its
 # current visual position, not wherever the lemming's transform is.

@@ -286,11 +286,19 @@ func _process_recover(delta: float) -> void:
 	match recover_step:
 		RecoverStep.FETCH:
 			aim = yummy.global_position
+			# Pick up by proximity rather than waiting on Area2D detection,
+			# which can lag a frame for an imperatively-moved StaticBody.
+			if yummy.is_dropped() and global_position.distance_to(aim) < 36.0:
+				yummy.give_to_grizzy(self)
+				return  # on_yummy_picked_up has switched us to RETURN_JAR
 		RecoverStep.RETURN_JAR:
-			aim = yummy.home_pos
-			# Yummy is riding us with a carry offset; once it lines up with
-			# the plinth, set it down and start walking off.
-			if yummy.global_position.distance_to(yummy.home_pos) < 6.0:
+			# Aim at the spot whose carry-offset puts the jar exactly on
+			# the plinth — `home_pos` itself would leave the jar floating
+			# above it, and Grizzy would stop at his aim without placing.
+			var place_spot: Vector2 = yummy.home_pos - yummy.CARRY_OFFSET_GRIZZY
+			aim = place_spot
+			if global_position.distance_to(place_spot) < 6.0 \
+					or yummy.global_position.distance_to(yummy.home_pos) < 4.0:
 				yummy.place_at_home()
 				recover_step = RecoverStep.GO_HOME
 				return
