@@ -8,6 +8,10 @@ const RESET_DELAY := 1.6
 
 @onready var hud_label: Label = $HUD/Label
 var resetting := false
+# Set when a lemming carries the jar across the line. Stays set through
+# Grizzy's recovery walk so the final status message names the winner
+# instead of crediting Grizzy.
+var lemming_winner: Node = null
 # Counts down inside _process while a reset is pending. -1 means idle.
 # We don't use `await get_tree().create_timer().timeout` because that
 # coroutine has been observed not to resume reliably in this scene.
@@ -37,16 +41,29 @@ func notify_carrier_captured() -> void:
 			lem.go_home()
 
 func notify_lemming_escaped(by: Node) -> void:
-	if resetting:
+	if resetting or lemming_winner != null:
 		return
+	lemming_winner = by
 	var who: String = "You" if by.name == "PlayerLemming" else String(by.name)
-	_set_status("%s made it home with the Yummy!  New round starting…" % who)
-	_schedule_reset()
+	_set_status("%s made it home with the Yummy! Grizzy's coming back for it…" % who)
+	# Reuse the carrier-captured recovery walk: lemmings stroll home and
+	# Grizzy fetches the dropped jar, returns it to the plinth, and walks
+	# back to his spot — that's when the round resets.
+	var grizzy := get_tree().get_first_node_in_group("grizzy")
+	if grizzy and grizzy.has_method("on_carrier_captured"):
+		grizzy.on_carrier_captured()
+	for lem in get_tree().get_nodes_in_group("lemmings"):
+		if lem.has_method("go_home"):
+			lem.go_home()
 
 func notify_grizzy_won() -> void:
 	if resetting:
 		return
-	_set_status("Grizzy got his Yummy back!  New round starting…")
+	if lemming_winner != null:
+		var who: String = "You" if lemming_winner.name == "PlayerLemming" else String(lemming_winner.name)
+		_set_status("%s won the round! New round starting…" % who)
+	else:
+		_set_status("Grizzy got his Yummy back! New round starting…")
 	_schedule_reset()
 
 func _process(delta: float) -> void:
@@ -74,6 +91,7 @@ func _reset_round() -> void:
 	var grizzy := get_tree().get_first_node_in_group("grizzy")
 	if grizzy and grizzy.has_method("reset_round"):
 		grizzy.reset_round()
+	lemming_winner = null
 	_set_status("Steal the Yummy and bring it home! WASD/arrows to move.")
 
 func _unhandled_input(event: InputEvent) -> void:

@@ -110,7 +110,12 @@ func _drop_at(pos: Vector2) -> void:
 		game.notify_carrier_captured()
 
 func _lemming_won(by: Node) -> void:
-	state = State.FINISHED
+	# Lemming made it across the line. Drop the jar here so Grizzy can
+	# fetch it on his reset walk back to the plinth — same recovery flow
+	# as a swat-capture, just triggered by victory instead of defeat.
+	carrier = null
+	carrier_is_grizzy = false
+	state = State.DROPPED
 	var game := get_tree().current_scene
 	if game and game.has_method("notify_lemming_escaped"):
 		game.notify_lemming_escaped(by)
