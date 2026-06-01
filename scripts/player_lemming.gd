@@ -3,7 +3,7 @@ extends Lemming
 # Double-tap a direction within DOUBLE_TAP_WINDOW to dash: a brief burst
 # where move_speed is multiplied. Steering still works during the burst.
 const DOUBLE_TAP_WINDOW := 0.28
-const DASH_DURATION := 0.18
+const DASH_DURATION := 0.35
 const DASH_MULTIPLIER := 2.4
 
 var _last_tap_dir := Vector2.ZERO
