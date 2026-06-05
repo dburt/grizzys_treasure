@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Grizzy's Treasure 3D</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', system-ui, sans-serif; }
+  #hud {
+    position: fixed; top: 12px; left: 16px; right: 220px; z-index: 5;
+    color: #fff; font-size: 20px; font-weight: 600;
+    text-shadow: 0 0 4px #000, 2px 2px 2px #000, -1px -1px 2px #000;
+    pointer-events: none;
+  }
+  #watched {
+    position: fixed; top: 48px; left: 50%; transform: translateX(-50%); z-index: 5;
+    color: #ffd34d; font-size: 26px; font-weight: 800; letter-spacing: 1px;
+    text-shadow: 0 0 6px #000, 2px 2px 2px #000;
+    pointer-events: none; display: none;
+  }
+  #vignette {
+    position: fixed; inset: 0; z-index: 4; pointer-events: none;
+    box-shadow: inset 0 0 140px 40px rgba(255, 60, 30, 0);
+    transition: box-shadow 0.15s;
+  }
+  #vignette.watched { box-shadow: inset 0 0 140px 40px rgba(255, 200, 40, 0.55); }
+  #vignette.danger  { box-shadow: inset 0 0 160px 60px rgba(255, 40, 20, 0.75); }
+  #flash {
+    position: fixed; inset: 0; z-index: 6; pointer-events: none;
+    background: rgba(255, 40, 20, 0); transition: background 0.4s;
+  }
+  #minimap {
+    position: fixed; top: 12px; right: 12px; z-index: 5;
+    border: 2px solid rgba(255,255,255,0.5); border-radius: 6px;
+    background: rgba(0,0,0,0.35); pointer-events: none;
+  }
+  #overlay {
+    position: fixed; inset: 0; z-index: 10; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(10, 20, 12, 0.78); color: #fff; cursor: pointer;
+    text-align: center;
+  }
+  #overlay h1 { font-size: 52px; margin: 0 0 8px; color: #ffd34d; text-shadow: 3px 3px 0 #5a3a14; }
+  #overlay p  { font-size: 18px; margin: 6px 0; max-width: 640px; line-height: 1.5; }
+  #overlay .go { margin-top: 22px; font-size: 24px; font-weight: 700; color: #9fe87f; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+  kbd {
+    background: #333; border: 1px solid #777; border-radius: 4px;
+    padding: 1px 6px; font-size: 15px;
+  }
+</style>
+</head>
+<body>
+<div id="hud">Steal the Yummy and bring it home!</div>
+<div id="watched">&#128064; GRIZZY IS WATCHING &mdash; FREEZE!</div>
+<div id="vignette"></div>
+<div id="flash"></div>
+<canvas id="minimap" width="192" height="116"></canvas>
+<div id="overlay">
+  <h1>&#127855; Grizzy's Treasure 3D</h1>
+  <p>You're a lemming. Sneak across the meadow, steal the <b style="color:#ffd34d">Yummy</b> jar
+     off the plinth, and carry it back over the white line.</p>
+  <p><b style="color:#e8956a">Grizzy</b> patrols with a vision cone &mdash; if he sees you <i>moving</i>,
+     you're bounced home. If he spots you <i>carrying the jar</i>, the chase is on and the saucepan comes out!</p>
+  <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;&bull;&nbsp; mouse to look
+     &nbsp;&bull;&nbsp; double-tap a move key to dash &nbsp;&bull;&nbsp; <kbd>R</kbd> restart round</p>
+  <p class="go">Click to play</p>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------------
+// World constants — the Godot scene used 1280x720 px; here 1 unit = 20 px,
+// so the meadow is 64 x 36 units. Godot y maps to Three.js z.
+// ---------------------------------------------------------------------------
+const DEG = Math.PI / 180;
+const FIELD = { minX: 0, maxX: 64, minZ: 0, maxZ: 36 };
+const START_LINE_X = 4;            // carrier crossing below this x wins
+
+const LEMMING_SPEED = 7.5;         // 150 px/s
+const LEMMING_RADIUS = 0.5;
+const PLAYER_EYE = 0.85;
+
+const DOUBLE_TAP_WINDOW = 0.28;
+const DASH_DURATION = 0.35;
+const DASH_MULTIPLIER = 2.4;
+
+const VISION_RANGE = 36;           // 720 px
+const VISION_HALF = 75 * DEG;      // 150 degree cone
+const CATCH_SPEED = 0.6;           // 12 px/s — slower than this is "frozen"
+
+const SWAT_REACH = 5.5;            // 110 px
+const SWAT_HALF_ARC = 55 * DEG;
+const SWAT_COOLDOWN = 0.85;
+const SWAT_DURATION = 0.32;
+
+const CHASE_SPEED = 11.5;          // 230 px/s
+const CHASE_TURN_RATE = 7.0;
+const RECOVER_SPEED = 8.75;        // 175 px/s
+const RECOVER_TURN_RATE = 9.0;
+const LOOK_MIN = 1.4, LOOK_MAX = 3.2, TURN_TIME = 0.55;
+const GRIZZY_RADIUS = 1.7;
+
+const RESET_DELAY = 1.6;
+
+const YUMMY_HOME = { x: 54, z: 18 };
+const GRIZZY_HOME = { x: 60, z: 18 };
+const PLAYER_SPAWN = { x: 3, z: 14 };
+const AI_SPAWNS = [{ x: 3, z: 5 }, { x: 3, z: 23 }, { x: 3, z: 31 }];
+
+// ---------------------------------------------------------------------------
+// Small math helpers (Godot's angle_difference / lerp_angle equivalents)
+// ---------------------------------------------------------------------------
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+function angleDiff(from, to) {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+const lerpAngle = (from, to, k) => from + angleDiff(from, to) * k;
+const dist2d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const rand = (a, b) => a + Math.random() * (b - a);
+
+// Facing angles live in the xz ground plane: dir = (cos a, sin a) -> (x, z).
+// Models are built facing +X, so a group's yaw is simply -facing.
+const applyYaw = (obj, facing) => { obj.rotation.y = -facing; };
+
+// ---------------------------------------------------------------------------
+// Renderer / scene
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9ed4f0);
+scene.fog = new THREE.Fog(0x9ed4f0, 55, 120);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 200);
+camera.rotation.order = 'YXZ';
+
+scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x4a6b3a, 0.9));
+const sun = new THREE.DirectionalLight(0xfff2d8, 1.5);
+sun.position.set(30, 45, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -45; sun.shadow.camera.right = 45;
+sun.shadow.camera.top = 45;  sun.shadow.camera.bottom = -45;
+sun.shadow.camera.far = 120;
+sun.target.position.set(32, 0, 18);
+scene.add(sun, sun.target);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// Environment: grass, start line, plinth, hedges, trees
+// ---------------------------------------------------------------------------
+function grassTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#578453';
+  g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 900; i++) {
+    g.fillStyle = `rgba(${60 + Math.random() * 50 | 0}, ${120 + Math.random() * 50 | 0}, ${55 + Math.random() * 35 | 0}, 0.5)`;
+    g.beginPath();
+    g.arc(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 3, 0, 7);
+    g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(16, 9);
+  return t;
+}
+
+{
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(220, 220),
+    new THREE.MeshLambertMaterial({ map: grassTexture() })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(32, 0, 18);
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Home/start line the carrier must cross.
+  const line = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.5, FIELD.maxZ),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  line.rotation.x = -Math.PI / 2;
+  line.position.set(START_LINE_X, 0.02, 18);
+  scene.add(line);
+
+  // Plinth the jar sits on.
+  const plinth = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.75, 0.95, 0.8, 20),
+    new THREE.MeshLambertMaterial({ color: 0x9a9a92 })
+  );
+  plinth.position.set(YUMMY_HOME.x, 0.4, YUMMY_HOME.z);
+  plinth.castShadow = plinth.receiveShadow = true;
+  scene.add(plinth);
+
+  // Hedge walls around the meadow.
+  const hedgeMat = new THREE.MeshLambertMaterial({ color: 0x2e5a28 });
+  const mkHedge = (w, d, x, z) => {
+    const h = new THREE.Mesh(new THREE.BoxGeometry(w, 1.6, d), hedgeMat);
+    h.position.set(x, 0.8, z);
+    h.castShadow = h.receiveShadow = true;
+    scene.add(h);
+  };
+  mkHedge(FIELD.maxX + 4, 1.2, 32, FIELD.minZ - 0.8);
+  mkHedge(FIELD.maxX + 4, 1.2, 32, FIELD.maxZ + 0.8);
+  mkHedge(1.2, FIELD.maxZ + 2, FIELD.minX - 0.8, 18);
+  mkHedge(1.2, FIELD.maxZ + 2, FIELD.maxX + 0.8, 18);
+
+  // Pine trees scattered beyond the hedges.
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2a });
+  const pineMat = new THREE.MeshLambertMaterial({ color: 0x35702e });
+  for (let i = 0; i < 26; i++) {
+    const ang = (i / 26) * Math.PI * 2 + Math.random() * 0.3;
+    const r = 42 + Math.random() * 22;
+    const x = 32 + Math.cos(ang) * r * 1.4;
+    const z = 18 + Math.sin(ang) * r * 0.85;
+    const s = rand(0.8, 1.6);
+    const tree = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25 * s, 0.35 * s, 2 * s, 8), trunkMat);
+    trunk.position.y = s;
+    const cone1 = new THREE.Mesh(new THREE.ConeGeometry(1.9 * s, 3.2 * s, 9), pineMat);
+    cone1.position.y = 3.1 * s;
+    const cone2 = new THREE.Mesh(new THREE.ConeGeometry(1.4 * s, 2.4 * s, 9), pineMat);
+    cone2.position.y = 4.6 * s;
+    trunk.castShadow = cone1.castShadow = cone2.castShadow = true;
+    tree.add(trunk, cone1, cone2);
+    tree.position.set(x, 0, z);
+    scene.add(tree);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Character model: GRIZZY — big brown bear, angry brows, saucepan.
+// Built facing +X. Returns the group plus the parts the animator drives.
+// ---------------------------------------------------------------------------
+function buildGrizzy() {
+  const g = new THREE.Group();
+  const tintables = [];
+  const mat = (color) => {
+    const m = new THREE.MeshLambertMaterial({ color });
+    tintables.push(m);
+    return m;
+  };
+  const fur = () => mat(0x6e4628);
+  const furDark = () => mat(0x462a16);
+  const cream = () => mat(0xbc8e60);
+  const cast = (mesh) => { mesh.castShadow = true; return mesh; };
+
+  // Body — big rounded torso.
+  const body = cast(new THREE.Mesh(new THREE.SphereGeometry(1.35, 24, 18), fur()));
+  body.scale.set(1.0, 1.25, 1.05);
+  body.position.y = 1.55;
+  g.add(body);
+
+  // Belly patch.
+  const belly = cast(new THREE.Mesh(new THREE.SphereGeometry(0.95, 20, 16), cream()));
+  belly.scale.set(0.55, 1.0, 0.85);
+  belly.position.set(0.95, 1.35, 0);
+  g.add(belly);
+
+  // Head.
+  const head = new THREE.Group();
+  head.position.set(0.25, 3.15, 0);
+  g.add(head);
+  head.add(cast(new THREE.Mesh(new THREE.SphereGeometry(0.95, 24, 18), fur())));
+
+  // Snout + nose + mouth.
+  const snout = cast(new THREE.Mesh(new THREE.SphereGeometry(0.45, 18, 14), mat(0xe4bc90)));
+  snout.scale.set(1.05, 0.75, 0.85);
+  snout.position.set(0.72, -0.18, 0);
+  head.add(snout);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), mat(0x1c120c));
+  nose.position.set(1.12, 0.0, 0);
+  head.add(nose);
+  const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.028, 8, 14, Math.PI), mat(0x462a16));
+  mouth.position.set(1.02, -0.32, 0);
+  mouth.rotation.set(0, Math.PI / 2, Math.PI);   // downward arc, facing forward
+  head.add(mouth);
+
+  // Eyes — white, dark pupils, tiny highlights.
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 12), mat(0xfcfaf4));
+    eye.position.set(0.68, 0.22, side * 0.34);
+    head.add(eye);
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.085, 10, 8), mat(0x140e08));
+    pupil.position.set(0.84, 0.23, side * 0.32);
+    head.add(pupil);
+    const glint = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    glint.position.set(0.91, 0.27, side * 0.30);
+    head.add(glint);
+
+    // Angry eyebrow — angled slab over each eye.
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.07, 0.34), furDark());
+    brow.position.set(0.72, 0.46, side * 0.34);
+    brow.rotation.x = side * -0.55;   // slant inward-down = scowl
+    head.add(brow);
+
+    // Round ear with lighter inner.
+    const ear = cast(new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), fur()));
+    ear.position.set(-0.15, 0.82, side * 0.62);
+    head.add(ear);
+    const inner = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), mat(0xe0b084));
+    inner.position.set(0.05, 0.84, side * 0.66);
+    inner.scale.set(0.6, 1, 1);
+    head.add(inner);
+  }
+
+  // Legs — stubby capsules with toes.
+  const legs = [];
+  for (const side of [-1, 1]) {
+    const leg = new THREE.Group();
+    leg.position.set(0, 0.95, side * 0.62);
+    const limb = cast(new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.55, 6, 12), fur()));
+    limb.position.y = -0.5;
+    const paw = cast(new THREE.Mesh(new THREE.SphereGeometry(0.36, 12, 10), furDark()));
+    paw.scale.set(1.25, 0.6, 1);
+    paw.position.set(0.12, -0.92, 0);
+    leg.add(limb, paw);
+    g.add(leg);
+    legs.push(leg);
+  }
+
+  // Arms — pivot groups at the shoulders so they can swing / swat.
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const arm = new THREE.Group();
+    arm.position.set(0.1, 2.45, side * 1.18);
+    const limb = cast(new THREE.Mesh(new THREE.CapsuleGeometry(0.27, 0.9, 6, 12), fur()));
+    limb.position.y = -0.62;
+    const paw = cast(new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), furDark()));
+    paw.position.y = -1.18;
+    arm.add(limb, paw);
+    arm.rotation.z = 0.15;
+    g.add(arm);
+    arms.push(arm);
+  }
+  const [leftArm, rightArm] = arms;   // side -1 is his left (z-), +1 his right
+
+  // Saucepan — handle + pan + rim, gripped by the right paw.
+  const pan = new THREE.Group();
+  {
+    const handle = cast(new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.1, 0.16),
+      new THREE.MeshLambertMaterial({ color: 0x66422a })));
+    handle.position.y = -0.5;
+    const bowl = cast(new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.5, 0.3, 18),
+      new THREE.MeshPhongMaterial({ color: 0x52545a, shininess: 60 })));
+    bowl.position.y = -1.2;
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.56, 0.05, 8, 20),
+      new THREE.MeshPhongMaterial({ color: 0x9ea2a8, shininess: 90 }));
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = -1.05;
+    pan.add(handle, bowl, rim);
+  }
+  pan.position.y = -1.18;
+  pan.visible = false;
+  rightArm.add(pan);
+
+  // Stubby tail.
+  const tail = cast(new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), furDark()));
+  tail.position.set(-1.3, 1.3, 0);
+  g.add(tail);
+
+  // Vision cone — translucent ground fan, child of the group so it rotates
+  // with Grizzy's facing.
+  const cone = new THREE.Mesh(
+    new THREE.CircleGeometry(VISION_RANGE, 40, -VISION_HALF, VISION_HALF * 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xfff259, transparent: true, opacity: 0.18,
+      side: THREE.DoubleSide, depthWrite: false,
+    })
+  );
+  cone.rotation.x = -Math.PI / 2;
+  cone.position.y = 0.06;
+  g.add(cone);
+
+  scene.add(g);
+  return { group: g, head, legs, leftArm, rightArm, pan, cone, tintables, body };
+}
+
+// ---------------------------------------------------------------------------
+// Character model: LEMMING — small round blue critter, pink inner ears,
+// pale belly, mischievous eyes. Built facing +X.
+// ---------------------------------------------------------------------------
+function buildLemming(hueShift = 0) {
+  const g = new THREE.Group();
+  const tintables = [];
+  const base = new THREE.Color(0x4e84cc).offsetHSL(hueShift, 0, 0);
+  const mat = (color) => {
+    const m = new THREE.MeshLambertMaterial({ color });
+    tintables.push(m);
+    return m;
+  };
+  const blue = () => mat(base.getHex());
+  const cast = (mesh) => { mesh.castShadow = true; return mesh; };
+
+  // One round blob of a body.
+  const body = cast(new THREE.Mesh(new THREE.SphereGeometry(0.46, 20, 16), blue()));
+  body.scale.set(1.0, 1.08, 0.95);
+  body.position.y = 0.48;
+  g.add(body);
+
+  // Pale belly patch, pushed to the front.
+  const belly = cast(new THREE.Mesh(new THREE.SphereGeometry(0.34, 16, 12), mat(0xd6e0ea)));
+  belly.scale.set(0.5, 0.9, 0.8);
+  belly.position.set(0.26, 0.4, 0);
+  g.add(belly);
+
+  // Eyes — wide and a little too eager.
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.105, 12, 10), mat(0xffffff));
+    eye.position.set(0.33, 0.66, side * 0.155);
+    g.add(eye);
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), mat(0x140e08));
+    pupil.position.set(0.42, 0.665, side * 0.15);
+    g.add(pupil);
+    const glint = new THREE.Mesh(new THREE.SphereGeometry(0.016, 6, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    glint.position.set(0.46, 0.69, side * 0.14);
+    g.add(glint);
+
+    // Ears with pink inner.
+    const ear = cast(new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), blue()));
+    ear.position.set(0.05, 0.95, side * 0.22);
+    g.add(ear);
+    const inner = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), mat(0xdcaaa0));
+    inner.position.set(0.13, 0.96, side * 0.23);
+    inner.scale.set(0.5, 1, 1);
+    g.add(inner);
+  }
+
+  // Nose + smile.
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), mat(0x3c281e));
+  nose.position.set(0.46, 0.55, 0);
+  g.add(nose);
+  const smile = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.016, 6, 12, Math.PI), mat(0x3c281e));
+  smile.position.set(0.42, 0.46, 0);
+  smile.rotation.set(0, Math.PI / 2, Math.PI);
+  g.add(smile);
+
+  // Little feet (animated) and paws.
+  const feet = [];
+  for (const side of [-1, 1]) {
+    const foot = cast(new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), blue()));
+    foot.scale.set(1.4, 0.6, 1);
+    foot.position.set(0.16, 0.07, side * 0.18);
+    g.add(foot);
+    feet.push(foot);
+    const paw = cast(new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), blue()));
+    paw.position.set(0.34, 0.34, side * 0.26);
+    g.add(paw);
+  }
+
+  // Fluffy tail.
+  const tail = cast(new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), mat(0xd6e0ea)));
+  tail.position.set(-0.44, 0.42, 0);
+  g.add(tail);
+
+  scene.add(g);
+  return { group: g, body, feet, tintables };
+}
+
+// ---------------------------------------------------------------------------
+// The Yummy jar — gold jar, red lid, "Y" label, slow idle spin & sparkle.
+// ---------------------------------------------------------------------------
+function buildYummy() {
+  const g = new THREE.Group();
+  const cast = (m) => { m.castShadow = true; return m; };
+
+  const jar = cast(new THREE.Mesh(
+    new THREE.CylinderGeometry(0.32, 0.28, 0.52, 18),
+    new THREE.MeshPhongMaterial({ color: 0xf2c640, shininess: 80, specular: 0xfff2b0 })
+  ));
+  jar.position.y = 0.26;
+  const lid = cast(new THREE.Mesh(
+    new THREE.CylinderGeometry(0.36, 0.36, 0.14, 18),
+    new THREE.MeshLambertMaterial({ color: 0xbe5034 })
+  ));
+  lid.position.y = 0.58;
+  const knob = new THREE.Mesh(
+    new THREE.SphereGeometry(0.08, 10, 8),
+    new THREE.MeshLambertMaterial({ color: 0x6c2612 })
+  );
+  knob.position.y = 0.68;
+
+  // "Y" label via a tiny canvas texture.
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fcf6dc'; ctx.fillRect(0, 0, 64, 64);
+  ctx.strokeStyle = '#a87c1c'; ctx.lineWidth = 4; ctx.strokeRect(2, 2, 60, 60);
+  ctx.fillStyle = '#aa5a1e'; ctx.font = 'bold 42px Georgia';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Y', 32, 36);
+  const label = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.3, 0.3),
+    new THREE.MeshLambertMaterial({ map: new THREE.CanvasTexture(c) })
+  );
+  label.position.set(0.305, 0.27, 0);
+  label.rotation.y = Math.PI / 2;
+
+  const glow = new THREE.PointLight(0xffd34d, 0.6, 4);
+  glow.position.y = 0.6;
+
+  g.add(jar, lid, knob, label, glow);
+  scene.add(g);
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Tint helpers — port of Godot's `modulate`. null restores base colors.
+// ---------------------------------------------------------------------------
+function applyTint(tintables, tint) {
+  for (const m of tintables) {
+    if (!m.userData.baseColor) m.userData.baseColor = m.color.clone();
+    m.color.copy(m.userData.baseColor);
+    if (tint) m.color.multiply(tint);
+  }
+}
+const TINT_STUN_CONE = new THREE.Color(1.0, 0.6, 0.6);
+const TINT_STUN_SWAT = new THREE.Color(1.0, 0.45, 0.45);
+const TINT_HOME = new THREE.Color(0.72, 0.74, 0.8);
+const TINT_GRIZZY_MAD = new THREE.Color(1.0, 0.78, 0.78);
+
+// ---------------------------------------------------------------------------
+// Game state
+// ---------------------------------------------------------------------------
+const hud = document.getElementById('hud');
+const watchedEl = document.getElementById('watched');
+const vignette = document.getElementById('vignette');
+const flash = document.getElementById('flash');
+const overlay = document.getElementById('overlay');
+const minimap = document.getElementById('minimap');
+const mctx = minimap.getContext('2d');
+
+const setStatus = (s) => { hud.textContent = s; };
+
+function flashScreen(alpha = 0.45) {
+  flash.style.transition = 'none';
+  flash.style.background = `rgba(255,40,20,${alpha})`;
+  requestAnimationFrame(() => {
+    flash.style.transition = 'background 0.45s';
+    flash.style.background = 'rgba(255,40,20,0)';
+  });
+}
+
+// --- Lemmings --------------------------------------------------------------
+function makeLemming(name, spawn, isPlayer, hueShift) {
+  const model = isPlayer ? null : buildLemming(hueShift);
+  return {
+    name, isPlayer,
+    spawn: { ...spawn },
+    pos: { ...spawn },
+    vel: { x: 0, z: 0 },
+    facing: 0,
+    moveSpeed: LEMMING_SPEED * (isPlayer ? 1 : rand(0.85, 1.05)),
+    stunned: 0,
+    goingHome: false,
+    walkPhase: 0,
+    // AI-only personality knobs (port of ai_lemming.gd)
+    caution: 0.85,
+    jitter: 1.3,
+    blockAlong: rand(0.25, 0.55),
+    blockPerp: rand(-1.6, 1.6),
+    model,
+  };
+}
+
+const player = makeLemming('PlayerLemming', PLAYER_SPAWN, true, 0);
+const aiLemmings = AI_SPAWNS.map((s, i) =>
+  makeLemming(`Lemming ${i + 1}`, s, false, (i - 1) * 0.045));
+const lemmings = [player, ...aiLemmings];
+
+const speedOf = (l) => Math.hypot(l.vel.x, l.vel.z);
+
+// --- Grizzy ----------------------------------------------------------------
+const G_STATE = { LOOKING: 0, TURNING: 1, CHASING: 2, RECOVERING: 3 };
+const R_STEP = { FETCH: 0, RETURN_JAR: 1, GO_HOME: 2, DONE: 3 };
+const grizzyModel = buildGrizzy();
+const grizzy = {
+  pos: { ...GRIZZY_HOME },
+  home: { ...GRIZZY_HOME },
+  facing: 0,                 // forward = +x (away from field); backward faces the lemmings
+  forwardAngle: 0,
+  facingBackward: false,
+  state: G_STATE.LOOKING,
+  t: 0,
+  lookDuration: 2,
+  turnFrom: 0, turnTo: 0,
+  swatTimer: 0, swatAnim: 0, swatDidHit: false,
+  targetCarrier: null,
+  recoverStep: R_STEP.FETCH,
+  walkPhase: 0,
+};
+
+// --- Yummy -----------------------------------------------------------------
+const Y_STATE = { IDLE: 0, CARRIED: 1, DROPPED: 2, FINISHED: 3 };
+const yummyModel = buildYummy();
+const yummy = {
+  state: Y_STATE.IDLE,
+  carrier: null,             // a lemming object or the grizzy object
+  carrierIsGrizzy: false,
+  pos: { ...YUMMY_HOME },
+  home: { ...YUMMY_HOME },
+};
+const yummyCarriedByLemming = () => yummy.state === Y_STATE.CARRIED && !yummy.carrierIsGrizzy;
+
+// --- Round director (port of game.gd) ---------------------------------------
+const game = {
+  resetting: false,
+  lemmingWinner: null,
+  resetCountdown: -1,
+
+  notifyYummyTaken(by) {
+    if (this.resetting) return;
+    const who = by.isPlayer ? "You've" : `${by.name} has`;
+    setStatus(`${who} got the Yummy — sneak it home before Grizzy spots you!`);
+  },
+  notifyCarrierCaptured() {
+    if (this.resetting) return;
+    setStatus("Grizzy caught the carrier! He's taking the Yummy back.");
+    grizzyOnCarrierCaptured();
+    for (const lem of lemmings) lemmingGoHome(lem);
+  },
+  notifyLemmingEscaped(by) {
+    if (this.resetting || this.lemmingWinner) return;
+    this.lemmingWinner = by;
+    const who = by.isPlayer ? 'You' : by.name;
+    setStatus(`${who} made it home with the Yummy! Grizzy's coming back for it…`);
+    grizzyOnCarrierCaptured();
+    for (const lem of lemmings) lemmingGoHome(lem);
+  },
+  notifyGrizzyWon() {
+    if (this.resetting) return;
+    if (this.lemmingWinner) {
+      const who = this.lemmingWinner.isPlayer ? 'You' : this.lemmingWinner.name;
+      setStatus(`${who} won the round! New round starting…`);
+    } else {
+      setStatus('Grizzy got his Yummy back! New round starting…');
+    }
+    this.resetting = true;
+    this.resetCountdown = RESET_DELAY;
+  },
+  update(dt) {
+    if (this.resetCountdown > 0) {
+      this.resetCountdown -= dt;
+      if (this.resetCountdown <= 0) {
+        this.resetCountdown = -1;
+        resetRound();
+        this.resetting = false;
+      }
+    }
+  },
+};
+
+function resetRound() {
+  for (const lem of lemmings) {
+    lem.goingHome = false;
+    lem.stunned = 0;
+    lem.vel = { x: 0, z: 0 };
+    lem.pos = { ...lem.spawn };
+    lem.facing = 0;
+    if (lem.model) applyTint(lem.model.tintables, null);
+  }
+  yummy.state = Y_STATE.IDLE;
+  yummy.carrier = null;
+  yummy.carrierIsGrizzy = false;
+  yummy.pos = { ...yummy.home };
+
+  grizzy.pos = { ...grizzy.home };
+  grizzy.facingBackward = false;
+  grizzy.facing = grizzy.forwardAngle;
+  grizzy.targetCarrier = null;
+  grizzy.swatAnim = 0; grizzy.swatTimer = 0; grizzy.swatDidHit = false;
+  grizzy.recoverStep = R_STEP.FETCH;
+  grizzyModel.cone.visible = true;
+  grizzyModel.pan.visible = false;
+  grizzyModel.rightArm.rotation.z = 0.15;
+  applyTint(grizzyModel.tintables, null);
+  grizzyStartLooking();
+
+  game.lemmingWinner = null;
+  setStatus('Steal the Yummy and bring it home! WASD to move, double-tap to dash.');
+}
+
+// ---------------------------------------------------------------------------
+// Lemming behaviour (port of lemming.gd / ai_lemming.gd / player_lemming.gd)
+// ---------------------------------------------------------------------------
+function lemmingGoHome(lem) {
+  if (lem.goingHome) return;
+  lem.goingHome = true;     // ghosts through everyone while walking back
+  if (lem.stunned <= 0 && lem.model) applyTint(lem.model.tintables, TINT_HOME);
+}
+
+function sendToSpawn(lem, stunTime, tint) {
+  lem.pos = { ...lem.spawn };
+  lem.vel = { x: 0, z: 0 };
+  lem.stunned = stunTime;
+  if (lem.model) applyTint(lem.model.tintables, tint);
+  if (lem.isPlayer) flashScreen(stunTime > 1 ? 0.55 : 0.35);
+}
+
+function onCaughtByGrizzy(lem) {
+  if (lem.goingHome) return;
+  sendToSpawn(lem, 0.7, TINT_STUN_CONE);
+  if (lem.isPlayer) setStatus('Grizzy saw you move! Back to the start.');
+}
+
+function onSwattedByGrizzy(lem) {
+  if (lem.goingHome) return;
+  yummyOnCarrierSwatted(lem);   // drop first so the jar lands in place
+  sendToSpawn(lem, 1.4, TINT_STUN_SWAT);
+}
+
+function aimFor(lem, target) {
+  const dx = target.x - lem.pos.x, dz = target.z - lem.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 0.2) { lem.vel = { x: 0, z: 0 }; return; }
+  lem.vel = { x: dx / d * lem.moveSpeed, z: dz / d * lem.moveSpeed };
+}
+
+function blockingPosition(lem, friend) {
+  // Plant between Grizzy and the carrier, fanned out per-lemming.
+  const ax = friend.pos.x - grizzy.pos.x, az = friend.pos.z - grizzy.pos.z;
+  const len = Math.hypot(ax, az);
+  if (len < 0.05) return { x: grizzy.pos.x, z: grizzy.pos.z };
+  const px = -az / len, pz = ax / len;
+  return {
+    x: grizzy.pos.x + ax * lem.blockAlong + px * lem.blockPerp,
+    z: grizzy.pos.z + az * lem.blockAlong + pz * lem.blockPerp,
+  };
+}
+
+function aiDecide(lem, time) {
+  if (yummyCarriedByLemming() && yummy.carrier === lem) {
+    aimFor(lem, { x: 2, z: lem.spawn.z });           // bolt for the line
+    return;
+  }
+  if (yummyCarriedByLemming()) {
+    const friend = yummy.carrier;
+    if (grizzy.state === G_STATE.CHASING && grizzy.targetCarrier === friend) {
+      aimFor(lem, blockingPosition(lem, friend));    // take the saucepan for them
+    } else {
+      aimFor(lem, friend.pos);                       // mob the carrier homeward
+    }
+    return;
+  }
+  // Jar on the plinth — sneak for it, freezing under the cone.
+  const dx = yummy.pos.x - lem.pos.x, dz = yummy.pos.z - lem.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 0.3) { lem.vel = { x: 0, z: 0 }; return; }
+  const dirX = dx / d, dirZ = dz / d;
+  if (grizzyIsLookingAt(lem.pos) && Math.random() < lem.caution) {
+    lem.vel = { x: 0, z: 0 };
+    return;
+  }
+  const wob = Math.sin(time * 4 + lem.pos.x * 1.4) * lem.jitter;
+  lem.vel = {
+    x: dirX * lem.moveSpeed - dirZ * wob,
+    z: dirZ * lem.moveSpeed + dirX * wob,
+  };
+}
+
+// --- Player input ------------------------------------------------------------
+const keys = new Set();
+let yaw = 0, pitch = 0;
+let dashTimer = 0;
+let lastTapDir = '', lastTapTime = -1;
+
+const KEY_DIRS = {
+  KeyW: 'f', ArrowUp: 'f', KeyS: 'b', ArrowDown: 'b',
+  KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r',
+};
+
+addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  keys.add(e.code);
+  if (e.code === 'KeyR') { resetRound(); return; }
+  const dir = KEY_DIRS[e.code];
+  if (!dir) return;
+  const now = performance.now() / 1000;
+  if (dir === lastTapDir && now - lastTapTime <= DOUBLE_TAP_WINDOW) {
+    dashTimer = DASH_DURATION;
+    lastTapTime = -1;        // consume so triple-tap doesn't chain
+  } else {
+    lastTapDir = dir;
+    lastTapTime = now;
+  }
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+
+overlay.addEventListener('click', () => renderer.domElement.requestPointerLock());
+document.addEventListener('pointerlockchange', () => {
+  overlay.style.display = document.pointerLockElement ? 'none' : 'flex';
+});
+addEventListener('mousemove', (e) => {
+  if (!document.pointerLockElement) return;
+  yaw += e.movementX * 0.0023;
+  pitch = clamp(pitch - e.movementY * 0.0023, -1.1, 1.1);
+});
+
+function playerDecide(dt) {
+  let f = 0, s = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) f += 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) f -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) s += 1;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) s -= 1;
+  let speed = player.moveSpeed;
+  if (dashTimer > 0) { dashTimer -= dt; speed *= DASH_MULTIPLIER; }
+  if (f === 0 && s === 0) { player.vel = { x: 0, z: 0 }; return; }
+  const fx = Math.cos(yaw), fz = Math.sin(yaw);     // camera-relative axes
+  const rx = -Math.sin(yaw), rz = Math.cos(yaw);
+  let vx = fx * f + rx * s, vz = fz * f + rz * s;
+  const len = Math.hypot(vx, vz);
+  player.vel = { x: vx / len * speed, z: vz / len * speed };
+}
+
+function updateLemming(lem, dt, time) {
+  if (lem.goingHome) {
+    // Walk back to spawn, ghosting through everyone; freeze there.
+    if (lem.stunned > 0) { lem.stunned -= dt; lem.vel = { x: 0, z: 0 }; }
+    else {
+      const dx = lem.spawn.x - lem.pos.x, dz = lem.spawn.z - lem.pos.z;
+      const d = Math.hypot(dx, dz);
+      lem.vel = d < 0.2 ? { x: 0, z: 0 }
+        : { x: dx / d * lem.moveSpeed, z: dz / d * lem.moveSpeed };
+    }
+  } else if (lem.stunned > 0) {
+    lem.stunned -= dt;
+    if (lem.stunned <= 0 && lem.model) applyTint(lem.model.tintables, null);
+    lem.vel = { x: 0, z: 0 };
+  } else {
+    if (lem.isPlayer) playerDecide(dt); else aiDecide(lem, time);
+  }
+
+  lem.pos.x += lem.vel.x * dt;
+  lem.pos.z += lem.vel.z * dt;
+  lem.pos.x = clamp(lem.pos.x, FIELD.minX + 0.6, FIELD.maxX - 0.6);
+  lem.pos.z = clamp(lem.pos.z, FIELD.minZ + 0.6, FIELD.maxZ - 0.6);
+
+  // Solid Grizzy — push out, unless ghosting home.
+  if (!lem.goingHome) {
+    const dx = lem.pos.x - grizzy.pos.x, dz = lem.pos.z - grizzy.pos.z;
+    const d = Math.hypot(dx, dz), minD = GRIZZY_RADIUS + LEMMING_RADIUS;
+    if (d < minD && d > 0.01) {
+      lem.pos.x = grizzy.pos.x + dx / d * minD;
+      lem.pos.z = grizzy.pos.z + dz / d * minD;
+    }
+  }
+
+  const sp = speedOf(lem);
+  if (sp > 0.05) lem.facing = Math.atan2(lem.vel.z, lem.vel.x);
+  lem.walkPhase += sp * dt * 2.2;
+}
+
+function separateLemmings() {
+  for (let i = 0; i < lemmings.length; i++) {
+    for (let j = i + 1; j < lemmings.length; j++) {
+      const a = lemmings[i], b = lemmings[j];
+      if (a.goingHome || b.goingHome) continue;
+      const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+      const d = Math.hypot(dx, dz), minD = LEMMING_RADIUS * 2;
+      if (d < minD && d > 0.01) {
+        const push = (minD - d) / 2;
+        a.pos.x -= dx / d * push; a.pos.z -= dz / d * push;
+        b.pos.x += dx / d * push; b.pos.z += dz / d * push;
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Grizzy behaviour (port of grizzy.gd)
+// ---------------------------------------------------------------------------
+function grizzyCanSee(pos) {
+  const dx = pos.x - grizzy.pos.x, dz = pos.z - grizzy.pos.z;
+  if (Math.hypot(dx, dz) > VISION_RANGE) return false;
+  return Math.abs(angleDiff(grizzy.facing, Math.atan2(dz, dx))) < VISION_HALF;
+}
+const grizzyIsLookingAt = (pos) => grizzy.state === G_STATE.LOOKING && grizzyCanSee(pos);
+
+function grizzyStartLooking() {
+  grizzy.state = G_STATE.LOOKING;
+  grizzy.t = 0;
+  grizzy.lookDuration = rand(LOOK_MIN, LOOK_MAX);
+}
+
+function grizzyStartTurning() {
+  grizzy.state = G_STATE.TURNING;
+  grizzy.t = 0;
+  grizzy.turnFrom = grizzy.facing;
+  grizzy.facingBackward = !grizzy.facingBackward;
+  grizzy.turnTo = grizzy.forwardAngle + (grizzy.facingBackward ? Math.PI : 0);
+}
+
+function grizzyStartChasing() {
+  if (!yummy.carrier) return;
+  grizzy.targetCarrier = yummy.carrier;
+  grizzy.state = G_STATE.CHASING;
+  grizzyModel.cone.visible = false;
+  grizzyModel.pan.visible = true;
+  grizzy.swatTimer = 0; grizzy.swatAnim = 0; grizzy.swatDidHit = false;
+  applyTint(grizzyModel.tintables, TINT_GRIZZY_MAD);
+  if (yummy.carrier.isPlayer) setStatus("Grizzy spotted you with the Yummy — RUN!");
+}
+
+function grizzyOnCarrierCaptured() {
+  if (grizzy.state === G_STATE.RECOVERING) return;
+  grizzy.state = G_STATE.RECOVERING;
+  grizzyModel.pan.visible = false;
+  grizzyModel.rightArm.rotation.z = 0.15;
+  applyTint(grizzyModel.tintables, null);
+  grizzy.targetCarrier = null;
+  grizzy.swatAnim = 0; grizzy.swatTimer = 0; grizzy.swatDidHit = false;
+  grizzy.recoverStep = R_STEP.FETCH;
+}
+
+function inSwatArc(pos) {
+  const dx = pos.x - grizzy.pos.x, dz = pos.z - grizzy.pos.z;
+  if (Math.hypot(dx, dz) > SWAT_REACH) return false;
+  return Math.abs(angleDiff(grizzy.facing, Math.atan2(dz, dx))) <= SWAT_HALF_ARC;
+}
+
+function doSwatHit() {
+  for (const lem of lemmings) {
+    if (lem.goingHome || !inSwatArc(lem.pos)) continue;
+    onSwattedByGrizzy(lem);
+  }
+}
+
+function updateGrizzy(dt) {
+  grizzy.t += dt;
+  switch (grizzy.state) {
+    case G_STATE.LOOKING: {
+      // Discovering the theft: the cone covers a carried jar.
+      if (yummyCarriedByLemming() && grizzyCanSee(yummy.pos)) {
+        grizzyStartChasing();
+      } else if (grizzy.t >= grizzy.lookDuration) {
+        grizzyStartTurning();
+      }
+      // Cone catches: any non-carrier lemming moving inside the cone.
+      const carrier = yummyCarriedByLemming() ? yummy.carrier : null;
+      for (const lem of lemmings) {
+        if (lem === carrier || lem.goingHome) continue;
+        if (speedOf(lem) > CATCH_SPEED && grizzyCanSee(lem.pos)) onCaughtByGrizzy(lem);
+      }
+      break;
+    }
+    case G_STATE.TURNING: {
+      const k = clamp(grizzy.t / TURN_TIME, 0, 1);
+      grizzy.facing = lerpAngle(grizzy.turnFrom, grizzy.turnTo, k);
+      if (k >= 1) { grizzy.facing = grizzy.turnTo; grizzyStartLooking(); }
+      break;
+    }
+    case G_STATE.CHASING: updateChase(dt); break;
+    case G_STATE.RECOVERING: updateRecover(dt); break;
+  }
+
+  // Cone tint: bright while actively looking, dim mid-turn.
+  if (grizzy.state === G_STATE.LOOKING) {
+    grizzyModel.cone.material.color.setHex(0xfff259);
+    grizzyModel.cone.material.opacity = 0.20;
+  } else if (grizzy.state === G_STATE.TURNING) {
+    grizzyModel.cone.material.color.setHex(0x888888);
+    grizzyModel.cone.material.opacity = 0.08;
+  }
+}
+
+function updateChase(dt) {
+  // Retarget if the carrier went down or handed the jar off.
+  if (!grizzy.targetCarrier || grizzy.targetCarrier.goingHome) {
+    grizzy.targetCarrier = yummyCarriedByLemming() ? yummy.carrier : null;
+  }
+  if (grizzy.targetCarrier) {
+    const dx = grizzy.targetCarrier.pos.x - grizzy.pos.x;
+    const dz = grizzy.targetCarrier.pos.z - grizzy.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 0.05) {
+      grizzy.facing = lerpAngle(grizzy.facing, Math.atan2(dz, dx),
+        clamp(dt * CHASE_TURN_RATE, 0, 1));
+      if (d > SWAT_REACH * 0.55) {
+        grizzy.pos.x += dx / d * CHASE_SPEED * dt;
+        grizzy.pos.z += dz / d * CHASE_SPEED * dt;
+        grizzy.walkPhase += CHASE_SPEED * dt * 0.9;
+      }
+    }
+  }
+
+  grizzy.swatTimer = Math.max(grizzy.swatTimer - dt, 0);
+  const arm = grizzyModel.rightArm;
+  if (grizzy.swatAnim > 0) {
+    grizzy.swatAnim -= dt;
+    const k = 1 - clamp(grizzy.swatAnim / SWAT_DURATION, 0, 1);
+    // Overhead smash: wind up fast, slam down through the hit frame.
+    arm.rotation.z = k < 0.45 ? lerp(0.15, 2.6, k / 0.45)
+                              : lerp(2.6, 0.35, (k - 0.45) / 0.55);
+    if (!grizzy.swatDidHit && k >= 0.55) {
+      grizzy.swatDidHit = true;
+      doSwatHit();
+    }
+    if (grizzy.swatAnim <= 0) {
+      grizzy.swatAnim = 0;
+      grizzy.swatDidHit = false;
+      arm.rotation.z = 0.15;
+    }
+  } else {
+    arm.rotation.z = lerp(arm.rotation.z, 0.15, clamp(dt * 8, 0, 1));
+    const someoneInArc = lemmings.some((l) => !l.goingHome && inSwatArc(l.pos));
+    if (grizzy.swatTimer <= 0 && someoneInArc) {
+      grizzy.swatAnim = SWAT_DURATION;
+      grizzy.swatTimer = SWAT_COOLDOWN;
+      grizzy.swatDidHit = false;
+    }
+  }
+}
+
+function updateRecover(dt) {
+  let aim;
+  switch (grizzy.recoverStep) {
+    case R_STEP.FETCH:
+      aim = yummy.pos;
+      if (yummy.state === Y_STATE.DROPPED && dist2d(grizzy.pos, aim) < 1.8) {
+        yummy.carrier = grizzy;
+        yummy.carrierIsGrizzy = true;
+        yummy.state = Y_STATE.CARRIED;
+        grizzy.recoverStep = R_STEP.RETURN_JAR;
+        return;
+      }
+      break;
+    case R_STEP.RETURN_JAR:
+      aim = yummy.home;
+      if (dist2d(grizzy.pos, aim) < 1.6) {
+        yummy.state = Y_STATE.FINISHED;
+        yummy.carrier = null;
+        yummy.carrierIsGrizzy = false;
+        yummy.pos = { ...yummy.home };
+        grizzy.recoverStep = R_STEP.GO_HOME;
+        return;
+      }
+      break;
+    case R_STEP.GO_HOME:
+      aim = grizzy.home;
+      if (dist2d(grizzy.pos, aim) < 0.3) {
+        grizzy.recoverStep = R_STEP.DONE;
+        game.notifyGrizzyWon();
+        return;
+      }
+      break;
+    default:
+      return;
+  }
+  const dx = aim.x - grizzy.pos.x, dz = aim.z - grizzy.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d > 0.05) {
+    grizzy.facing = lerpAngle(grizzy.facing, Math.atan2(dz, dx),
+      clamp(dt * RECOVER_TURN_RATE, 0, 1));
+    const step = Math.min(RECOVER_SPEED * dt, d);
+    grizzy.pos.x += dx / d * step;
+    grizzy.pos.z += dz / d * step;
+    grizzy.walkPhase += step * 0.9;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Yummy behaviour (port of yummy.gd)
+// ---------------------------------------------------------------------------
+function yummyOnCarrierSwatted(lem) {
+  if (yummy.state !== Y_STATE.CARRIED || yummy.carrierIsGrizzy || yummy.carrier !== lem) return;
+  yummy.carrier = null;
+  yummy.carrierIsGrizzy = false;
+  yummy.state = Y_STATE.DROPPED;
+  game.notifyCarrierCaptured();
+}
+
+function updateYummy() {
+  switch (yummy.state) {
+    case Y_STATE.IDLE:
+      // Only un-stunned, in-play lemmings can grab it off the plinth.
+      for (const lem of lemmings) {
+        if (lem.stunned > 0 || lem.goingHome) continue;
+        if (dist2d(lem.pos, yummy.pos) < 1.4) {
+          yummy.carrier = lem;
+          yummy.carrierIsGrizzy = false;
+          yummy.state = Y_STATE.CARRIED;
+          game.notifyYummyTaken(lem);
+          break;
+        }
+      }
+      break;
+    case Y_STATE.CARRIED:
+      yummy.pos = { x: yummy.carrier.pos.x, z: yummy.carrier.pos.z };
+      if (!yummy.carrierIsGrizzy && yummy.carrier.pos.x < START_LINE_X) {
+        const by = yummy.carrier;
+        yummy.carrier = null;
+        yummy.state = Y_STATE.DROPPED;   // drop here; Grizzy fetches it on his walk
+        game.notifyLemmingEscaped(by);
+      }
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Visual sync — drive the models from the logic state each frame
+// ---------------------------------------------------------------------------
+const _jarOffset = new THREE.Vector3();
+
+function syncVisuals(time) {
+  // --- Grizzy
+  const gm = grizzyModel;
+  gm.group.position.set(grizzy.pos.x, 0, grizzy.pos.z);
+  applyYaw(gm.group, grizzy.facing);
+  const moving = grizzy.state === G_STATE.CHASING || grizzy.state === G_STATE.RECOVERING;
+  const gSwing = moving ? Math.sin(grizzy.walkPhase) : 0;
+  gm.group.position.y = moving ? Math.abs(Math.sin(grizzy.walkPhase)) * 0.12 : 0;
+  gm.legs[0].rotation.z = gSwing * 0.5;
+  gm.legs[1].rotation.z = -gSwing * 0.5;
+  gm.leftArm.rotation.z = 0.15 - gSwing * 0.4;
+  if (grizzy.swatAnim <= 0 && grizzy.state !== G_STATE.CHASING) {
+    gm.rightArm.rotation.z = 0.15 + gSwing * 0.4;
+  }
+  // Idle breathing + a slow menacing head sway while looking.
+  gm.head.position.y = 3.15 + Math.sin(time * 1.8) * 0.04;
+  gm.head.rotation.y = grizzy.state === G_STATE.LOOKING ? Math.sin(time * 1.1) * 0.18 : 0;
+  gm.cone.visible = grizzy.state === G_STATE.LOOKING || grizzy.state === G_STATE.TURNING;
+
+  // --- AI lemmings
+  for (const lem of aiLemmings) {
+    const m = lem.model;
+    m.group.position.set(lem.pos.x, 0, lem.pos.z);
+    applyYaw(m.group, lem.facing);
+    const sp = speedOf(lem);
+    if (sp > 0.1) {
+      const s = Math.sin(lem.walkPhase * 2.4);
+      m.group.position.y = Math.abs(s) * 0.06;
+      m.group.rotation.z = s * 0.1;            // waddle
+      m.feet[0].position.y = 0.07 + Math.max(0, s) * 0.12;
+      m.feet[1].position.y = 0.07 + Math.max(0, -s) * 0.12;
+    } else {
+      m.group.rotation.z = 0;
+      m.group.position.y = Math.sin(time * 3 + lem.spawn.z) * 0.015;  // idle breath
+    }
+  }
+
+  // --- Yummy jar
+  if (yummy.state === Y_STATE.CARRIED && yummy.carrier === player) {
+    // Held in view, bottom-right, bobbing with your stride.
+    _jarOffset.set(0.42, -0.42 + Math.sin(player.walkPhase * 2.4) * 0.03, -0.85)
+      .applyQuaternion(camera.quaternion).add(camera.position);
+    yummyModel.position.copy(_jarOffset);
+    yummyModel.rotation.set(0, -yaw, 0);
+  } else if (yummy.state === Y_STATE.CARRIED) {
+    const overhead = yummy.carrierIsGrizzy ? 4.4 : 1.15;
+    yummyModel.position.set(yummy.pos.x, overhead + Math.sin(time * 5) * 0.05, yummy.pos.z);
+    yummyModel.rotation.set(0, time * 1.5, 0);
+  } else if (yummy.state === Y_STATE.DROPPED) {
+    yummyModel.position.set(yummy.pos.x, 0.05, yummy.pos.z);
+    yummyModel.rotation.set(0.4, 0.9, 0);      // toppled on the grass
+  } else {
+    yummyModel.position.set(yummy.pos.x, 0.84 + Math.sin(time * 1.6) * 0.04, yummy.pos.z);
+    yummyModel.rotation.set(0, time * 0.7, 0);
+  }
+
+  // --- Camera = player's eyes
+  camera.position.set(player.pos.x, PLAYER_EYE, player.pos.z);
+  if (player.goingHome && speedOf(player) > 0.1) {
+    // Round over: gently steer the view along the walk home.
+    yaw = lerpAngle(yaw, Math.atan2(player.vel.z, player.vel.x), 0.04);
+    pitch = lerp(pitch, 0, 0.04);
+  }
+  camera.rotation.y = -yaw - Math.PI / 2;
+  camera.rotation.x = pitch;
+  // Headbob + stun shake.
+  if (speedOf(player) > 0.1) camera.position.y += Math.abs(Math.sin(player.walkPhase * 1.6)) * 0.05;
+  if (player.stunned > 0) {
+    camera.position.y += Math.sin(time * 60) * 0.02;
+    camera.rotation.z = Math.sin(time * 40) * 0.02;
+  } else {
+    camera.rotation.z = 0;
+  }
+
+  // --- Watched indicator
+  const watched = grizzyIsLookingAt(player.pos) && !player.goingHome && player.stunned <= 0;
+  const isCarrier = yummyCarriedByLemming() && yummy.carrier === player;
+  watchedEl.style.display = watched && !isCarrier ? 'block' : 'none';
+  vignette.className = '';
+  if (grizzy.state === G_STATE.CHASING && grizzy.targetCarrier === player) {
+    vignette.className = 'danger';
+  } else if (watched && !isCarrier) {
+    vignette.className = speedOf(player) > CATCH_SPEED ? 'danger' : 'watched';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Minimap — top-down tactical view
+// ---------------------------------------------------------------------------
+function drawMinimap() {
+  const sx = minimap.width / (FIELD.maxX + 2), sz = (minimap.height - 4) / FIELD.maxZ;
+  const px = (x) => 4 + x * sx * 0.93, pz = (z) => 2 + z * sz;
+  mctx.clearRect(0, 0, minimap.width, minimap.height);
+  mctx.fillStyle = 'rgba(60,110,55,0.85)';
+  mctx.fillRect(0, 0, minimap.width, minimap.height);
+
+  // Start line
+  mctx.strokeStyle = '#fff';
+  mctx.lineWidth = 2;
+  mctx.beginPath();
+  mctx.moveTo(px(START_LINE_X), pz(0));
+  mctx.lineTo(px(START_LINE_X), pz(FIELD.maxZ));
+  mctx.stroke();
+
+  // Vision cone
+  if (grizzy.state === G_STATE.LOOKING || grizzy.state === G_STATE.TURNING) {
+    mctx.fillStyle = grizzy.state === G_STATE.LOOKING
+      ? 'rgba(255,240,80,0.35)' : 'rgba(160,160,160,0.18)';
+    mctx.beginPath();
+    mctx.moveTo(px(grizzy.pos.x), pz(grizzy.pos.z));
+    const r = VISION_RANGE * sx * 0.93;
+    mctx.arc(px(grizzy.pos.x), pz(grizzy.pos.z), r,
+      grizzy.facing - VISION_HALF, grizzy.facing + VISION_HALF);
+    mctx.closePath();
+    mctx.fill();
+  }
+
+  const dot = (x, z, r, color) => {
+    mctx.fillStyle = color;
+    mctx.beginPath();
+    mctx.arc(px(x), pz(z), r, 0, 7);
+    mctx.fill();
+  };
+  // Jar / plinth
+  dot(YUMMY_HOME.x, YUMMY_HOME.z, 2.5, '#999');
+  dot(yummy.pos.x, yummy.pos.z, 3, '#ffd34d');
+  // Lemmings
+  for (const lem of aiLemmings) dot(lem.pos.x, lem.pos.z, 3, lem.goingHome ? '#8b96aa' : '#5a90dd');
+  // Grizzy
+  dot(grizzy.pos.x, grizzy.pos.z, 5, grizzy.state === G_STATE.CHASING ? '#d04428' : '#7a4e2a');
+  // Player — arrow showing view direction
+  mctx.save();
+  mctx.translate(px(player.pos.x), pz(player.pos.z));
+  mctx.rotate(yaw);
+  mctx.fillStyle = '#fff';
+  mctx.beginPath();
+  mctx.moveTo(6, 0); mctx.lineTo(-3, -4); mctx.lineTo(-3, 4);
+  mctx.closePath();
+  mctx.fill();
+  mctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let lastT = performance.now();
+setStatus('Steal the Yummy and bring it home! WASD to move, double-tap to dash.');
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = clamp((now - lastT) / 1000, 0, 0.05);
+  lastT = now;
+  const time = now / 1000;
+
+  game.update(dt);
+  updateGrizzy(dt);
+  for (const lem of lemmings) updateLemming(lem, dt, time);
+  separateLemmings();
+  updateYummy();
+
+  syncVisuals(time);
+  drawMinimap();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
