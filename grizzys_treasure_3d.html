@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>Grizzy's Treasure 3D</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', system-ui, sans-serif; }
+  body { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   #hud {
     position: fixed; top: 12px; left: 16px; right: 220px; z-index: 5;
     color: #fff; font-size: 20px; font-weight: 600;
@@ -48,6 +49,38 @@
     background: #333; border: 1px solid #777; border-radius: 4px;
     padding: 1px 6px; font-size: 15px;
   }
+  /* --- Touch controls (shown only on coarse-pointer devices) --- */
+  #stick {
+    position: fixed; z-index: 7; width: 124px; height: 124px;
+    margin: -62px 0 0 -62px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.08);
+    pointer-events: none; display: none;
+  }
+  #stick .knob {
+    position: absolute; left: 50%; top: 50%; width: 52px; height: 52px;
+    margin: -26px 0 0 -26px; border-radius: 50%;
+    background: rgba(255,255,255,0.55); box-shadow: 0 0 8px rgba(0,0,0,0.4);
+  }
+  .touchBtn {
+    position: fixed; z-index: 7; display: none;
+    align-items: center; justify-content: center;
+    border-radius: 50%; border: 2px solid rgba(255,255,255,0.5);
+    background: rgba(0,0,0,0.35); color: #fff; font-weight: 800;
+    text-shadow: 1px 1px 2px #000;
+  }
+  .touchBtn:active { background: rgba(255,255,255,0.35); }
+  #dashBtn { right: 24px; bottom: 90px; width: 78px; height: 78px; font-size: 17px; }
+  #restartBtn { right: 16px; top: 140px; width: 44px; height: 44px; font-size: 22px; }
+  body.touch .touchBtn { display: flex; }
+  @media (max-width: 760px) {
+    #hud { font-size: 14px; right: 150px; }
+    #watched { font-size: 16px; top: 42px; width: 100%; }
+    #minimap { width: 132px; height: 80px; }
+    #restartBtn { top: 104px; }
+    #overlay h1 { font-size: 32px; }
+    #overlay p { font-size: 14px; margin: 4px 16px; }
+    #overlay .go { font-size: 19px; margin-top: 14px; }
+  }
 </style>
 </head>
 <body>
@@ -56,13 +89,16 @@
 <div id="vignette"></div>
 <div id="flash"></div>
 <canvas id="minimap" width="192" height="116"></canvas>
+<div id="stick"><div class="knob"></div></div>
+<div id="dashBtn" class="touchBtn">DASH</div>
+<div id="restartBtn" class="touchBtn">&#8635;</div>
 <div id="overlay">
   <h1>&#127855; Grizzy's Treasure 3D</h1>
   <p>You're a lemming. Sneak across the meadow, steal the <b style="color:#ffd34d">Yummy</b> jar
      off the plinth, and carry it back over the white line.</p>
   <p><b style="color:#e8956a">Grizzy</b> patrols with a vision cone &mdash; if he sees you <i>moving</i>,
      you're bounced home. If he spots you <i>carrying the jar</i>, the chase is on and the saucepan comes out!</p>
-  <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;&bull;&nbsp; mouse to look
+  <p id="controlsHint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;&bull;&nbsp; mouse to look
      &nbsp;&bull;&nbsp; double-tap a move key to dash &nbsp;&bull;&nbsp; <kbd>R</kbd> restart round</p>
   <p class="go">Click to play</p>
 </div>
@@ -134,9 +170,12 @@ const applyYaw = (obj, facing) => { obj.rotation.y = -facing; };
 // ---------------------------------------------------------------------------
 // Renderer / scene
 // ---------------------------------------------------------------------------
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+if (IS_TOUCH) document.body.classList.add('touch');
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.5 : 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
@@ -152,7 +191,7 @@ scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x4a6b3a, 0.9));
 const sun = new THREE.DirectionalLight(0xfff2d8, 1.5);
 sun.position.set(30, 45, 10);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(IS_TOUCH ? 1024 : 2048, IS_TOUCH ? 1024 : 2048);
 sun.shadow.camera.left = -45; sun.shadow.camera.right = 45;
 sun.shadow.camera.top = 45;  sun.shadow.camera.bottom = -45;
 sun.shadow.camera.far = 120;
@@ -555,6 +594,9 @@ const minimap = document.getElementById('minimap');
 const mctx = minimap.getContext('2d');
 
 const setStatus = (s) => { hud.textContent = s; };
+const READY_MSG = IS_TOUCH
+  ? 'Steal the Yummy and bring it home! Left thumb moves, right thumb looks.'
+  : 'Steal the Yummy and bring it home! WASD to move, double-tap to dash.';
 
 function flashScreen(alpha = 0.45) {
   flash.style.transition = 'none';
@@ -701,7 +743,7 @@ function resetRound() {
   grizzyStartLooking();
 
   game.lemmingWinner = null;
-  setStatus('Steal the Yummy and bring it home! WASD to move, double-tap to dash.');
+  setStatus(READY_MSG);
 }
 
 // ---------------------------------------------------------------------------
@@ -810,9 +852,19 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 
-overlay.addEventListener('click', () => renderer.domElement.requestPointerLock());
+if (IS_TOUCH) {
+  document.getElementById('controlsHint').innerHTML =
+    'Left thumb: move &nbsp;&bull;&nbsp; right thumb: look around ' +
+    '&nbsp;&bull;&nbsp; <b>DASH</b> button for a burst of speed';
+  document.querySelector('#overlay .go').textContent = 'Tap to play';
+}
+
+overlay.addEventListener('click', () => {
+  if (IS_TOUCH) overlay.style.display = 'none';
+  else renderer.domElement.requestPointerLock();
+});
 document.addEventListener('pointerlockchange', () => {
-  overlay.style.display = document.pointerLockElement ? 'none' : 'flex';
+  if (!IS_TOUCH) overlay.style.display = document.pointerLockElement ? 'none' : 'flex';
 });
 addEventListener('mousemove', (e) => {
   if (!document.pointerLockElement) return;
@@ -820,19 +872,87 @@ addEventListener('mousemove', (e) => {
   pitch = clamp(pitch - e.movementY * 0.0023, -1.1, 1.1);
 });
 
+// --- Touch controls: floating left-thumb stick to move, right-thumb drag to
+// look, DASH / restart buttons. The stick snaps to full speed past a small
+// deadzone so the "freeze or be seen" rule can't be cheated by creeping.
+const stick = document.getElementById('stick');
+const knob = stick.querySelector('.knob');
+const touchMove = { f: 0, s: 0 };
+const STICK_R = 52;
+let moveTouch = null, lookTouch = null;
+
+function onTouchStart(e) {
+  if (overlay.style.display !== 'none') return;   // overlay tap handles itself
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.clientX < innerWidth / 2 && moveTouch === null) {
+      moveTouch = { id: t.identifier, x: t.clientX, y: t.clientY };
+      stick.style.display = 'block';
+      stick.style.left = `${t.clientX}px`;
+      stick.style.top = `${t.clientY}px`;
+      knob.style.transform = 'translate(0,0)';
+    } else if (lookTouch === null) {
+      lookTouch = { id: t.identifier, x: t.clientX, y: t.clientY };
+    }
+  }
+}
+function onTouchMove(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (moveTouch && t.identifier === moveTouch.id) {
+      let dx = t.clientX - moveTouch.x, dy = t.clientY - moveTouch.y;
+      const len = Math.hypot(dx, dy);
+      if (len > STICK_R) { dx *= STICK_R / len; dy *= STICK_R / len; }
+      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      touchMove.s = dx / STICK_R;       // screen right = strafe right
+      touchMove.f = -dy / STICK_R;      // screen up = forward
+    } else if (lookTouch && t.identifier === lookTouch.id) {
+      yaw += (t.clientX - lookTouch.x) * 0.006;
+      pitch = clamp(pitch - (t.clientY - lookTouch.y) * 0.006, -1.1, 1.1);
+      lookTouch.x = t.clientX;
+      lookTouch.y = t.clientY;
+    }
+  }
+}
+function onTouchEnd(e) {
+  for (const t of e.changedTouches) {
+    if (moveTouch && t.identifier === moveTouch.id) {
+      moveTouch = null;
+      touchMove.f = touchMove.s = 0;
+      stick.style.display = 'none';
+    }
+    if (lookTouch && t.identifier === lookTouch.id) lookTouch = null;
+  }
+}
+document.addEventListener('touchstart', onTouchStart, { passive: false });
+document.addEventListener('touchmove', onTouchMove, { passive: false });
+document.addEventListener('touchend', onTouchEnd);
+document.addEventListener('touchcancel', onTouchEnd);
+
+document.getElementById('dashBtn').addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  dashTimer = DASH_DURATION;
+});
+document.getElementById('restartBtn').addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  resetRound();
+});
+
 function playerDecide(dt) {
-  let f = 0, s = 0;
+  let f = touchMove.f, s = touchMove.s;
   if (keys.has('KeyW') || keys.has('ArrowUp')) f += 1;
   if (keys.has('KeyS') || keys.has('ArrowDown')) f -= 1;
   if (keys.has('KeyD') || keys.has('ArrowRight')) s += 1;
   if (keys.has('KeyA') || keys.has('ArrowLeft')) s -= 1;
   let speed = player.moveSpeed;
   if (dashTimer > 0) { dashTimer -= dt; speed *= DASH_MULTIPLIER; }
-  if (f === 0 && s === 0) { player.vel = { x: 0, z: 0 }; return; }
   const fx = Math.cos(yaw), fz = Math.sin(yaw);     // camera-relative axes
   const rx = -Math.sin(yaw), rz = Math.cos(yaw);
   let vx = fx * f + rx * s, vz = fz * f + rz * s;
   const len = Math.hypot(vx, vz);
+  if (len < 0.25) { player.vel = { x: 0, z: 0 }; return; }   // stick deadzone
   player.vel = { x: vx / len * speed, z: vz / len * speed };
 }
 
@@ -1271,7 +1391,7 @@ function drawMinimap() {
 // Main loop
 // ---------------------------------------------------------------------------
 let lastT = performance.now();
-setStatus('Steal the Yummy and bring it home! WASD to move, double-tap to dash.');
+setStatus(READY_MSG);
 
 function tick(now) {
   requestAnimationFrame(tick);
