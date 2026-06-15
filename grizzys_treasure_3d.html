@@ -98,6 +98,8 @@
      off the plinth, and carry it back over the white line.</p>
   <p><b style="color:#e8956a">Grizzy</b> patrols with a vision cone &mdash; if he sees you <i>moving</i>,
      you're bounced home. If he spots you <i>carrying the jar</i>, the chase is on and the saucepan comes out!</p>
+  <p>The Yummy's locked inside the <b style="color:#c9a06a">ranger's hut</b> with Grizzy. Slip in through the
+     doorway on your side, use the crates, barrels and rocks to break his line of sight, then sneak back out.</p>
   <p id="controlsHint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;&bull;&nbsp; mouse to look
      &nbsp;&bull;&nbsp; double-tap a move key to dash &nbsp;&bull;&nbsp; <kbd>R</kbd> restart round</p>
   <p class="go">Click to play</p>
@@ -253,11 +255,11 @@ function grassTexture() {
   plinth.castShadow = plinth.receiveShadow = true;
   scene.add(plinth);
 
-  // Hedge walls around the meadow.
+  // Low hedge marking the meadow boundary (kept short so the pines show over it).
   const hedgeMat = new THREE.MeshLambertMaterial({ color: 0x2e5a28 });
   const mkHedge = (w, d, x, z) => {
-    const h = new THREE.Mesh(new THREE.BoxGeometry(w, 1.6, d), hedgeMat);
-    h.position.set(x, 0.8, z);
+    const h = new THREE.Mesh(new THREE.BoxGeometry(w, 0.9, d), hedgeMat);
+    h.position.set(x, 0.45, z);
     h.castShadow = h.receiveShadow = true;
     scene.add(h);
   };
@@ -274,7 +276,7 @@ function grassTexture() {
     const r = 42 + Math.random() * 22;
     const x = 32 + Math.cos(ang) * r * 1.4;
     const z = 18 + Math.sin(ang) * r * 0.85;
-    const s = rand(0.8, 1.6);
+    const s = rand(2.0, 3.2);              // tall enough to clear the hut roof & hedge
     const tree = new THREE.Group();
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25 * s, 0.35 * s, 2 * s, 8), trunkMat);
     trunk.position.y = s;
@@ -286,6 +288,182 @@ function grassTexture() {
     tree.add(trunk, cone1, cone2);
     tree.position.set(x, 0, z);
     scene.add(tree);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Obstacles & the ranger's hut
+//
+// Every obstacle is an axis-aligned box in the xz plane. It pushes characters
+// out (collision) and, when `vision` is set, blocks Grizzy's line of sight.
+// The hut is one big stockade enclosing the plinth, the scattered cover and
+// Grizzy's patrol — its only doorway faces the lemmings on the west side, so
+// they must sneak in, grab the Yummy and slip back out the same way.
+// ---------------------------------------------------------------------------
+const OBSTACLES = [];                                   // { minX, maxX, minZ, maxZ, vision, door }
+
+const HUT = { minX: 12, maxX: 63, minZ: 3, maxZ: 33 };  // enclosure footprint
+const HUT_H = 3.6;
+const DOOR_Z = 18, DOOR_HALF = 2.6;                     // door gap in the west wall (wide enough for Grizzy)
+const DOOR_APPROACH = 2.6;                              // how far either side agents line up to pass through
+const insideHut = (p) => p.x > HUT.minX;                // east of the west wall = in the yard
+
+// Push a circle (centre `pos`, given radius) out of every obstacle box.
+function resolveObstacles(pos, radius) {
+  for (const o of OBSTACLES) {
+    const minX = o.minX - radius, maxX = o.maxX + radius;
+    const minZ = o.minZ - radius, maxZ = o.maxZ + radius;
+    if (pos.x <= minX || pos.x >= maxX || pos.z <= minZ || pos.z >= maxZ) continue;
+    const dL = pos.x - minX, dR = maxX - pos.x, dB = pos.z - minZ, dT = maxZ - pos.z;
+    const m = Math.min(dL, dR, dB, dT);
+    if (m === dL) pos.x = minX;
+    else if (m === dR) pos.x = maxX;
+    else if (m === dB) pos.z = minZ;
+    else pos.z = maxZ;
+  }
+}
+
+// Does the segment a->b clip the box `o`? (Liang–Barsky clipping.)
+function segHitsBox(ax, az, bx, bz, o) {
+  let t0 = 0, t1 = 1;
+  const dx = bx - ax, dz = bz - az;
+  const clip = (p, q) => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+    else       { if (r < t0) return false; if (r < t1) t1 = r; }
+    return true;
+  };
+  return clip(-dx, ax - o.minX) && clip(dx, o.maxX - ax) &&
+         clip(-dz, az - o.minZ) && clip(dz, o.maxZ - az) && t0 < t1;
+}
+function visionBlocked(a, b) {
+  for (const o of OBSTACLES) if (o.vision && segHitsBox(a.x, a.z, b.x, b.z, o)) return true;
+  return false;
+}
+
+// Pathfinding step 1 — choose the immediate waypoint toward `target`. If the
+// target is on the far side of the west wall, route via the doorway; otherwise
+// head straight there (obstacle avoidance handles the fine steering).
+function routeDoor(pos, target) {
+  if (insideHut(pos) === insideHut(target)) return target;     // same side — go direct
+  const aligned = Math.abs(pos.z - DOOR_Z) < 1.7;
+  if (insideHut(pos)) {                                        // inside heading out
+    return aligned && pos.x < HUT.minX + 4
+      ? { x: HUT.minX - DOOR_APPROACH, z: DOOR_Z }
+      : { x: HUT.minX + DOOR_APPROACH, z: DOOR_Z };
+  }
+  return aligned && pos.x > HUT.minX - 4                       // outside heading in
+    ? { x: HUT.minX + DOOR_APPROACH, z: DOOR_Z }
+    : { x: HUT.minX - DOOR_APPROACH, z: DOOR_Z };
+}
+
+// Pathfinding step 2 — bend a desired unit heading away from nearby obstacle
+// edges so the mover slides around walls and cover. `skipDoor` ignores the
+// doorway jambs while an agent is deliberately threading the gap.
+function avoidVec(pos, dirX, dirZ, reach, skipDoor) {
+  let vx = dirX, vz = dirZ;
+  for (const o of OBSTACLES) {
+    if (skipDoor && o.door) continue;
+    const cx = clamp(pos.x, o.minX, o.maxX), cz = clamp(pos.z, o.minZ, o.maxZ);
+    let ox = pos.x - cx, oz = pos.z - cz, od = Math.hypot(ox, oz);
+    if (od < reach) {
+      if (od < 1e-3) { ox = pos.x - (o.minX + o.maxX) / 2; oz = pos.z - (o.minZ + o.maxZ) / 2; od = Math.hypot(ox, oz) || 1; }
+      const w = (reach - od) / reach * 1.8;
+      vx += ox / od * w; vz += oz / od * w;
+    }
+  }
+  const l = Math.hypot(vx, vz) || 1;
+  return { x: vx / l, z: vz / l };
+}
+
+{
+  const logMat    = new THREE.MeshLambertMaterial({ color: 0x8a6a45 });
+  const roofMat   = new THREE.MeshLambertMaterial({ color: 0x7a3b2a });
+  const frameMat  = new THREE.MeshLambertMaterial({ color: 0x5c4326 });
+  const crateMat  = new THREE.MeshLambertMaterial({ color: 0xb07b3e });
+  const barrelMat = new THREE.MeshLambertMaterial({ color: 0x76502c });
+  const rockMat   = new THREE.MeshLambertMaterial({ color: 0x8b8d8f });
+
+  // Box mesh + matching collision/vision obstacle in one shot.
+  const wall = (cx, cz, w, d, h, mat, door = false) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(cx, h / 2, cz);
+    m.castShadow = m.receiveShadow = true;
+    scene.add(m);
+    OBSTACLES.push({ minX: cx - w / 2, maxX: cx + w / 2,
+                     minZ: cz - d / 2, maxZ: cz + d / 2, vision: true, door });
+    return m;
+  };
+  // Round/odd obstacle: drop the mesh, register a square footprint.
+  const roundBlocker = (mesh, cx, cz, r) => {
+    mesh.position.set(cx, mesh.position.y, cz);
+    mesh.castShadow = mesh.receiveShadow = true;
+    scene.add(mesh);
+    OBSTACLES.push({ minX: cx - r, maxX: cx + r, minZ: cz - r, maxZ: cz + r, vision: true });
+  };
+
+  // --- Stockade walls around the whole yard, with a doorway on the west side.
+  const T = 0.8;
+  const midX = (HUT.minX + HUT.maxX) / 2, midZ = (HUT.minZ + HUT.maxZ) / 2;
+  const spanX = HUT.maxX - HUT.minX, spanZ = HUT.maxZ - HUT.minZ;
+  wall(HUT.maxX, midZ, T, spanZ + T, HUT_H, logMat);            // east wall (behind Grizzy)
+  wall(midX, HUT.minZ, spanX + T, T, HUT_H, logMat);            // south wall
+  wall(midX, HUT.maxZ, spanX + T, T, HUT_H, logMat);            // north wall
+  const doorLo = DOOR_Z - DOOR_HALF, doorHi = DOOR_Z + DOOR_HALF;
+  wall(HUT.minX, (HUT.minZ + doorLo) / 2, T, doorLo - HUT.minZ, HUT_H, logMat, true);   // west wall, below door
+  wall(HUT.minX, (doorHi + HUT.maxZ) / 2, T, HUT.maxZ - doorHi, HUT_H, logMat, true);   // west wall, above door
+
+  // Door frame (thin, sits in the wall plane so the gap stays passable).
+  for (const z of [doorLo, doorHi]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(1.0, HUT_H, 0.3), frameMat);
+    post.position.set(HUT.minX, HUT_H / 2, z); post.castShadow = true; scene.add(post);
+  }
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, DOOR_HALF * 2 + 0.6), frameMat);
+  lintel.position.set(HUT.minX, HUT_H - 0.25, DOOR_Z); lintel.castShadow = true; scene.add(lintel);
+
+  // --- Gabled roof spanning the whole hut, ridge running north–south down the
+  // middle so both slabs slope to the east and west walls.
+  const rise = 4.6, run = spanX / 2 + 0.8, slope = Math.hypot(run, rise);
+  const ang = Math.atan2(rise, run);
+  for (const sgn of [-1, 1]) {
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(slope, 0.25, spanZ + 1.4), roofMat);
+    slab.position.set(midX + sgn * run / 2, HUT_H + rise / 2, midZ);
+    slab.rotation.z = -sgn * ang;
+    slab.castShadow = true;
+    scene.add(slab);
+  }
+  // Gable end-caps fill the triangles above the north & south walls.
+  const capShape = new THREE.Shape();
+  capShape.moveTo(-run, 0); capShape.lineTo(run, 0); capShape.lineTo(0, rise); capShape.closePath();
+  for (const z of [HUT.minZ, HUT.maxZ]) {
+    const cap = new THREE.Mesh(new THREE.ShapeGeometry(capShape), logMat);
+    cap.position.set(midX, HUT_H, z);
+    cap.castShadow = true;
+    scene.add(cap);
+  }
+
+  // --- Scattered cover inside the yard, between the doorway and the plinth.
+  wall(30, 12, 2.2, 2.2, 2.0, crateMat);             // crate stack
+  wall(31.6, 10.6, 1.4, 1.4, 1.3, crateMat);         // smaller crate beside it
+  wall(27, 26.5, 3.0, 1.6, 1.5, logMat);             // stacked logs
+  wall(50, 22, 1.9, 1.9, 1.7, crateMat);             // cover near the plinth
+  wall(49, 13, 1.6, 1.6, 1.5, crateMat);
+  {
+    const hay = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.65, 2.0, 16),
+      new THREE.MeshLambertMaterial({ color: 0xc7a13e }));
+    hay.position.y = 1.0;
+    roundBlocker(hay, 35, 8.5, 1.5);                 // haystack
+  }
+  for (const [bx, bz] of [[40, 23], [40.2, 24.6], [41.4, 23.8]]) {     // barrel cluster
+    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 1.7, 14), barrelMat);
+    b.position.y = 0.85;
+    roundBlocker(b, bx, bz, 0.7);
+  }
+  {
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(1.8), rockMat);
+    rock.position.y = 1.2; rock.rotation.set(0.3, 0.5, 0.2);
+    roundBlocker(rock, 44, 16, 1.5);                 // boulder
   }
 }
 
@@ -623,6 +801,7 @@ function makeLemming(name, spawn, isPlayer, hueShift) {
     // AI-only personality knobs (port of ai_lemming.gd)
     caution: 0.85,
     jitter: 1.3,
+    wobPhase: rand(0, Math.PI * 2),
     blockAlong: rand(0.25, 0.55),
     blockPerp: rand(-1.6, 1.6),
     model,
@@ -654,6 +833,8 @@ const grizzy = {
   targetCarrier: null,
   recoverStep: R_STEP.FETCH,
   walkPhase: 0,
+  stuckT: 0,                 // watchdog: ghosts past obstacles if wedged while pathing
+  lastPos: { ...GRIZZY_HOME },
 };
 
 // --- Yummy -----------------------------------------------------------------
@@ -673,6 +854,7 @@ const game = {
   resetting: false,
   lemmingWinner: null,
   resetCountdown: -1,
+  captureFreeze: false,        // others freeze (don't go home) while Grizzy returns the jar
 
   notifyYummyTaken(by) {
     if (this.resetting) return;
@@ -681,9 +863,9 @@ const game = {
   },
   notifyCarrierCaptured() {
     if (this.resetting) return;
-    setStatus("Grizzy caught the carrier! He's taking the Yummy back.");
+    setStatus("Grizzy caught the carrier! The others freeze while he returns the Yummy.");
     grizzyOnCarrierCaptured();
-    for (const lem of lemmings) lemmingGoHome(lem);
+    this.captureFreeze = true;       // everyone else holds still until the round resets
   },
   notifyLemmingEscaped(by) {
     if (this.resetting || this.lemmingWinner) return;
@@ -717,6 +899,7 @@ const game = {
 };
 
 function resetRound() {
+  game.captureFreeze = false;
   for (const lem of lemmings) {
     lem.goingHome = false;
     lem.stunned = 0;
@@ -736,6 +919,8 @@ function resetRound() {
   grizzy.targetCarrier = null;
   grizzy.swatAnim = 0; grizzy.swatTimer = 0; grizzy.swatDidHit = false;
   grizzy.recoverStep = R_STEP.FETCH;
+  grizzy.stuckT = 0;
+  grizzy.lastPos = { ...grizzy.home };
   grizzyModel.cone.visible = true;
   grizzyModel.pan.visible = false;
   grizzyModel.rightArm.rotation.z = 0.15;
@@ -775,13 +960,6 @@ function onSwattedByGrizzy(lem) {
   sendToSpawn(lem, 1.4, TINT_STUN_SWAT);
 }
 
-function aimFor(lem, target) {
-  const dx = target.x - lem.pos.x, dz = target.z - lem.pos.z;
-  const d = Math.hypot(dx, dz);
-  if (d < 0.2) { lem.vel = { x: 0, z: 0 }; return; }
-  lem.vel = { x: dx / d * lem.moveSpeed, z: dz / d * lem.moveSpeed };
-}
-
 function blockingPosition(lem, friend) {
   // Plant between Grizzy and the carrier, fanned out per-lemming.
   const ax = friend.pos.x - grizzy.pos.x, az = friend.pos.z - grizzy.pos.z;
@@ -794,34 +972,38 @@ function blockingPosition(lem, friend) {
   };
 }
 
+// Steer a lemming toward `dest`: route through the doorway when needed, slide
+// around obstacle edges, and add a waddle wobble so a crowd jitters through
+// the gap instead of jamming shoulder-to-shoulder.
+function steerTo(lem, dest, time) {
+  const crossing = insideHut(lem.pos) !== insideHut(dest);
+  const wp = routeDoor(lem.pos, dest);
+  const dx = wp.x - lem.pos.x, dz = wp.z - lem.pos.z, len = Math.hypot(dx, dz) || 1;
+  const dir = avoidVec(lem.pos, dx / len, dz / len, LEMMING_RADIUS + 2.0, crossing);
+  const wob = Math.sin(time * 4 + lem.wobPhase) * lem.jitter * 0.14;
+  let vx = dir.x - dir.z * wob, vz = dir.z + dir.x * wob;   // nudge perpendicular to heading
+  const vl = Math.hypot(vx, vz) || 1;
+  lem.vel = { x: vx / vl * lem.moveSpeed, z: vz / vl * lem.moveSpeed };
+}
+
 function aiDecide(lem, time) {
+  let dest;
   if (yummyCarriedByLemming() && yummy.carrier === lem) {
-    aimFor(lem, { x: 2, z: lem.spawn.z });           // bolt for the line
-    return;
-  }
-  if (yummyCarriedByLemming()) {
+    dest = { x: 2, z: lem.spawn.z };                 // bolt for the line
+  } else if (yummyCarriedByLemming()) {
     const friend = yummy.carrier;
-    if (grizzy.state === G_STATE.CHASING && grizzy.targetCarrier === friend) {
-      aimFor(lem, blockingPosition(lem, friend));    // take the saucepan for them
-    } else {
-      aimFor(lem, friend.pos);                       // mob the carrier homeward
-    }
-    return;
+    dest = (grizzy.state === G_STATE.CHASING && grizzy.targetCarrier === friend)
+      ? blockingPosition(lem, friend)                // take the saucepan for them
+      : friend.pos;                                  // mob the carrier homeward
+  } else {
+    // Jar on the plinth — sneak in for it. Freeze whenever Grizzy could catch
+    // us (gaze or mid-turn sweep); cover that breaks his sight lets us keep
+    // moving. Hidden lemmings press on; only the bold few risk a watched dash.
+    dest = yummy.pos;
+    if (dist2d(lem.pos, dest) < 0.3) { lem.vel = { x: 0, z: 0 }; return; }
+    if (grizzyThreatens(lem.pos)) { lem.vel = { x: 0, z: 0 }; return; }
   }
-  // Jar on the plinth — sneak for it, freezing under the cone.
-  const dx = yummy.pos.x - lem.pos.x, dz = yummy.pos.z - lem.pos.z;
-  const d = Math.hypot(dx, dz);
-  if (d < 0.3) { lem.vel = { x: 0, z: 0 }; return; }
-  const dirX = dx / d, dirZ = dz / d;
-  if (grizzyIsLookingAt(lem.pos) && Math.random() < lem.caution) {
-    lem.vel = { x: 0, z: 0 };
-    return;
-  }
-  const wob = Math.sin(time * 4 + lem.pos.x * 1.4) * lem.jitter;
-  lem.vel = {
-    x: dirX * lem.moveSpeed - dirZ * wob,
-    z: dirZ * lem.moveSpeed + dirX * wob,
-  };
+  steerTo(lem, dest, time);
 }
 
 // --- Player input ------------------------------------------------------------
@@ -970,6 +1152,8 @@ function updateLemming(lem, dt, time) {
     lem.stunned -= dt;
     if (lem.stunned <= 0 && lem.model) applyTint(lem.model.tintables, null);
     lem.vel = { x: 0, z: 0 };
+  } else if (game.captureFreeze) {
+    lem.vel = { x: 0, z: 0 };    // hold still while Grizzy hauls the jar back
   } else {
     if (lem.isPlayer) playerDecide(dt); else aiDecide(lem, time);
   }
@@ -988,6 +1172,9 @@ function updateLemming(lem, dt, time) {
       lem.pos.z = grizzy.pos.z + dz / d * minD;
     }
   }
+
+  // Solid walls & obstacles — push out (in-play lemmings only; the walk home ghosts).
+  if (!lem.goingHome) resolveObstacles(lem.pos, LEMMING_RADIUS);
 
   const sp = speedOf(lem);
   if (sp > 0.05) lem.facing = Math.atan2(lem.vel.z, lem.vel.x);
@@ -1016,9 +1203,22 @@ function separateLemmings() {
 function grizzyCanSee(pos) {
   const dx = pos.x - grizzy.pos.x, dz = pos.z - grizzy.pos.z;
   if (Math.hypot(dx, dz) > VISION_RANGE) return false;
-  return Math.abs(angleDiff(grizzy.facing, Math.atan2(dz, dx))) < VISION_HALF;
+  if (Math.abs(angleDiff(grizzy.facing, Math.atan2(dz, dx))) >= VISION_HALF) return false;
+  return !visionBlocked(grizzy.pos, pos);            // the hut & obstacles block his view
 }
 const grizzyIsLookingAt = (pos) => grizzy.state === G_STATE.LOOKING && grizzyCanSee(pos);
+
+// Would Grizzy catch a mover here? True while he's looking at the spot, and
+// also while his cone is sweeping toward it mid-turn — so cautious lemmings
+// hold still through the turn instead of being caught the instant it ends.
+function grizzyThreatens(pos) {
+  if (grizzy.state === G_STATE.LOOKING) return grizzyCanSee(pos);
+  if (grizzy.state === G_STATE.TURNING) {
+    const dx = pos.x - grizzy.pos.x, dz = pos.z - grizzy.pos.z;
+    return Math.hypot(dx, dz) <= VISION_RANGE && !visionBlocked(grizzy.pos, pos);
+  }
+  return false;
+}
 
 function grizzyStartLooking() {
   grizzy.state = G_STATE.LOOKING;
@@ -1097,6 +1297,14 @@ function updateGrizzy(dt) {
     case G_STATE.RECOVERING: updateRecover(dt); break;
   }
 
+  // Grizzy is solid against walls too, so he can't barge through the hut — but
+  // a watchdog lets him ghost free if he ever wedges himself while pathing.
+  const moving = grizzy.state === G_STATE.CHASING || grizzy.state === G_STATE.RECOVERING;
+  if (moving && dist2d(grizzy.pos, grizzy.lastPos) < 0.02) grizzy.stuckT += dt;
+  else grizzy.stuckT = 0;
+  if (grizzy.stuckT < 1.8) resolveObstacles(grizzy.pos, GRIZZY_RADIUS * 0.85);
+  grizzy.lastPos = { x: grizzy.pos.x, z: grizzy.pos.z };
+
   // Cone tint: bright while actively looking, dim mid-turn.
   if (grizzy.state === G_STATE.LOOKING) {
     grizzyModel.cone.material.color.setHex(0xfff259);
@@ -1113,15 +1321,21 @@ function updateChase(dt) {
     grizzy.targetCarrier = yummyCarriedByLemming() ? yummy.carrier : null;
   }
   if (grizzy.targetCarrier) {
-    const dx = grizzy.targetCarrier.pos.x - grizzy.pos.x;
-    const dz = grizzy.targetCarrier.pos.z - grizzy.pos.z;
+    const tgt = grizzy.targetCarrier.pos;
+    const dx = tgt.x - grizzy.pos.x, dz = tgt.z - grizzy.pos.z;
     const d = Math.hypot(dx, dz);
     if (d > 0.05) {
       grizzy.facing = lerpAngle(grizzy.facing, Math.atan2(dz, dx),
-        clamp(dt * CHASE_TURN_RATE, 0, 1));
+        clamp(dt * CHASE_TURN_RATE, 0, 1));   // face the carrier so swats land true
       if (d > SWAT_REACH * 0.55) {
-        grizzy.pos.x += dx / d * CHASE_SPEED * dt;
-        grizzy.pos.z += dz / d * CHASE_SPEED * dt;
+        // Path around walls & cover (via the doorway when chasing across it).
+        const crossing = insideHut(grizzy.pos) !== insideHut(tgt);
+        const wp = routeDoor(grizzy.pos, tgt);
+        const wl = Math.hypot(wp.x - grizzy.pos.x, wp.z - grizzy.pos.z) || 1;
+        const dir = avoidVec(grizzy.pos, (wp.x - grizzy.pos.x) / wl,
+          (wp.z - grizzy.pos.z) / wl, GRIZZY_RADIUS + 2.2, crossing);
+        grizzy.pos.x += dir.x * CHASE_SPEED * dt;
+        grizzy.pos.z += dir.z * CHASE_SPEED * dt;
         grizzy.walkPhase += CHASE_SPEED * dt * 0.9;
       }
     }
@@ -1193,11 +1407,18 @@ function updateRecover(dt) {
   const dx = aim.x - grizzy.pos.x, dz = aim.z - grizzy.pos.z;
   const d = Math.hypot(dx, dz);
   if (d > 0.05) {
-    grizzy.facing = lerpAngle(grizzy.facing, Math.atan2(dz, dx),
+    // Path around walls & cover, routing through the doorway if the jar/home
+    // is on the far side of the west wall.
+    const crossing = insideHut(grizzy.pos) !== insideHut(aim);
+    const wp = routeDoor(grizzy.pos, aim);
+    const wl = Math.hypot(wp.x - grizzy.pos.x, wp.z - grizzy.pos.z) || 1;
+    const dir = avoidVec(grizzy.pos, (wp.x - grizzy.pos.x) / wl,
+      (wp.z - grizzy.pos.z) / wl, GRIZZY_RADIUS + 2.2, crossing);
+    grizzy.facing = lerpAngle(grizzy.facing, Math.atan2(dir.z, dir.x),
       clamp(dt * RECOVER_TURN_RATE, 0, 1));
     const step = Math.min(RECOVER_SPEED * dt, d);
-    grizzy.pos.x += dx / d * step;
-    grizzy.pos.z += dz / d * step;
+    grizzy.pos.x += dir.x * step;
+    grizzy.pos.z += dir.z * step;
     grizzy.walkPhase += step * 0.9;
   }
 }
@@ -1360,6 +1581,13 @@ function drawMinimap() {
       grizzy.facing - VISION_HALF, grizzy.facing + VISION_HALF);
     mctx.closePath();
     mctx.fill();
+  }
+
+  // Hut & obstacles
+  mctx.fillStyle = 'rgba(60,42,26,0.92)';
+  for (const o of OBSTACLES) {
+    mctx.fillRect(px(o.minX), pz(o.minZ),
+      (o.maxX - o.minX) * sx * 0.93, (o.maxZ - o.minZ) * sz);
   }
 
   const dot = (x, z, r, color) => {
