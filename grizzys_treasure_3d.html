@@ -227,6 +227,64 @@ function grassTexture() {
   return t;
 }
 
+// Staggered courses of cool blue-grey slate tiles, for the hut roof.
+function slateTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#34393f'; g.fillRect(0, 0, 256, 256);          // dark grout
+  const cols = 4, rows = 8, tw = 256 / cols, th = 256 / rows;
+  for (let r = 0; r < rows; r++) {
+    const off = (r % 2) * tw / 2;                                // stagger every other course
+    for (let i = -1; i < cols; i++) {
+      const x = i * tw + off + 1.2, y = r * th + 1.2, w = tw - 2.4, h = th - 2.4;
+      const s = 60 + Math.random() * 38 | 0;
+      g.fillStyle = `rgb(${s - 8}, ${s}, ${s + 12})`;            // bluish slate, per-tile variation
+      g.fillRect(x, y, w, h);
+      g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(x, y, w, 1.5);          // top highlight
+      g.fillStyle = 'rgba(0,0,0,0.22)';       g.fillRect(x, y + h - 1.5, w, 1.5); // bottom shadow
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+// Rough-cut, weathered, greyed pine boards with grain, knots and sun-bleach.
+function pineTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  const boards = 5, bh = 256 / boards;
+  for (let b = 0; b < boards; b++) {
+    const y0 = b * bh;
+    const base = 116 + Math.random() * 40;
+    g.fillStyle = `rgb(${base + 12 | 0}, ${base - 4 | 0}, ${base - 32 | 0})`;   // warm-grey board
+    g.fillRect(0, y0, 256, bh);
+    for (let s = 0; s < 24; s++) {                               // lengthwise grain streaks
+      const yy = y0 + Math.random() * bh;
+      g.strokeStyle = `rgba(${70 + Math.random() * 40 | 0}, ${58 + Math.random() * 28 | 0}, ${42 + Math.random() * 24 | 0}, 0.32)`;
+      g.lineWidth = 0.6 + Math.random();
+      g.beginPath(); g.moveTo(0, yy);
+      for (let x = 0; x <= 256; x += 32) g.lineTo(x, yy + (Math.random() - 0.5) * 3);
+      g.stroke();
+    }
+    for (let s = 0; s < 5; s++) {                                // bleached weathering streaks
+      g.fillStyle = `rgba(202,199,186,${0.05 + Math.random() * 0.08})`;
+      g.fillRect(Math.random() * 256, y0 + 2, 5 + Math.random() * 28, bh - 4);
+    }
+    if (Math.random() < 0.7) {                                   // a knot
+      const kx = Math.random() * 256, ky = y0 + bh * (0.3 + Math.random() * 0.4), kr = 3 + Math.random() * 4;
+      g.fillStyle = '#5b4326'; g.beginPath(); g.ellipse(kx, ky, kr, kr * 0.7, 0, 0, 7); g.fill();
+      g.fillStyle = '#372716'; g.beginPath(); g.ellipse(kx, ky, kr * 0.5, kr * 0.34, 0, 0, 7); g.fill();
+    }
+    g.fillStyle = 'rgba(38,28,18,0.55)'; g.fillRect(0, y0, 256, 2);   // dark gap between boards
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
 {
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(220, 220),
@@ -302,7 +360,7 @@ function grassTexture() {
 // ---------------------------------------------------------------------------
 const OBSTACLES = [];                                   // { minX, maxX, minZ, maxZ, vision, door }
 
-const HUT = { minX: 12, maxX: 63, minZ: 3, maxZ: 33 };  // enclosure footprint
+const HUT = { minX: 24, maxX: 63, minZ: 3, maxZ: 33 };  // enclosure footprint (west wall at the edge of Grizzy's gaze)
 const HUT_H = 3.6;
 const DOOR_Z = 18, DOOR_HALF = 2.6;                     // door gap in the west wall (wide enough for Grizzy)
 const DOOR_APPROACH = 2.6;                              // how far either side agents line up to pass through
@@ -378,9 +436,24 @@ function avoidVec(pos, dirX, dirZ, reach, skipDoor) {
 }
 
 {
+  // Slate roof + weathered-pine board textures. Pine is cloned per piece so the
+  // boards stay a consistent real-world size whatever the wall's dimensions.
+  const slateTex = slateTexture();
+  slateTex.repeat.set(7, 8);
+  const pineTex = pineTexture();
+  const pineClone = (rx, ry) => {
+    const t = pineTex.clone();
+    t.needsUpdate = true;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rx, ry);
+    return t;
+  };
+  const pineMat = (w, d, h) => new THREE.MeshLambertMaterial({
+    map: pineClone(Math.max(0.5, Math.max(w, d) / 3.2), Math.max(1, h / 0.62)),
+  });
+
+  const roofMat   = new THREE.MeshLambertMaterial({ map: slateTex });
   const logMat    = new THREE.MeshLambertMaterial({ color: 0x8a6a45 });
-  const roofMat   = new THREE.MeshLambertMaterial({ color: 0x7a3b2a });
-  const frameMat  = new THREE.MeshLambertMaterial({ color: 0x5c4326 });
   const crateMat  = new THREE.MeshLambertMaterial({ color: 0xb07b3e });
   const barrelMat = new THREE.MeshLambertMaterial({ color: 0x76502c });
   const rockMat   = new THREE.MeshLambertMaterial({ color: 0x8b8d8f });
@@ -407,19 +480,20 @@ function avoidVec(pos, dirX, dirZ, reach, skipDoor) {
   const T = 0.8;
   const midX = (HUT.minX + HUT.maxX) / 2, midZ = (HUT.minZ + HUT.maxZ) / 2;
   const spanX = HUT.maxX - HUT.minX, spanZ = HUT.maxZ - HUT.minZ;
-  wall(HUT.maxX, midZ, T, spanZ + T, HUT_H, logMat);            // east wall (behind Grizzy)
-  wall(midX, HUT.minZ, spanX + T, T, HUT_H, logMat);            // south wall
-  wall(midX, HUT.maxZ, spanX + T, T, HUT_H, logMat);            // north wall
+  wall(HUT.maxX, midZ, T, spanZ + T, HUT_H, pineMat(T, spanZ + T, HUT_H));   // east wall (behind Grizzy)
+  wall(midX, HUT.minZ, spanX + T, T, HUT_H, pineMat(spanX + T, T, HUT_H));    // south wall
+  wall(midX, HUT.maxZ, spanX + T, T, HUT_H, pineMat(spanX + T, T, HUT_H));    // north wall
   const doorLo = DOOR_Z - DOOR_HALF, doorHi = DOOR_Z + DOOR_HALF;
-  wall(HUT.minX, (HUT.minZ + doorLo) / 2, T, doorLo - HUT.minZ, HUT_H, logMat, true);   // west wall, below door
-  wall(HUT.minX, (doorHi + HUT.maxZ) / 2, T, HUT.maxZ - doorHi, HUT_H, logMat, true);   // west wall, above door
+  wall(HUT.minX, (HUT.minZ + doorLo) / 2, T, doorLo - HUT.minZ, HUT_H, pineMat(T, doorLo - HUT.minZ, HUT_H), true);  // west wall, below door
+  wall(HUT.minX, (doorHi + HUT.maxZ) / 2, T, HUT.maxZ - doorHi, HUT_H, pineMat(T, HUT.maxZ - doorHi, HUT_H), true);  // west wall, above door
 
-  // Door frame (thin, sits in the wall plane so the gap stays passable).
+  // Door frame — rough-cut pine pillars and lintel (sit in the wall plane so the gap stays passable).
   for (const z of [doorLo, doorHi]) {
-    const post = new THREE.Mesh(new THREE.BoxGeometry(1.0, HUT_H, 0.3), frameMat);
+    const post = new THREE.Mesh(new THREE.BoxGeometry(1.0, HUT_H, 0.3), pineMat(1.0, 0.3, HUT_H));
     post.position.set(HUT.minX, HUT_H / 2, z); post.castShadow = true; scene.add(post);
   }
-  const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, DOOR_HALF * 2 + 0.6), frameMat);
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, DOOR_HALF * 2 + 0.6),
+    pineMat(1.0, DOOR_HALF * 2 + 0.6, 0.5));
   lintel.position.set(HUT.minX, HUT_H - 0.25, DOOR_Z); lintel.castShadow = true; scene.add(lintel);
 
   // --- Gabled roof spanning the whole hut, ridge running north–south down the
@@ -437,7 +511,9 @@ function avoidVec(pos, dirX, dirZ, reach, skipDoor) {
   const capShape = new THREE.Shape();
   capShape.moveTo(-run, 0); capShape.lineTo(run, 0); capShape.lineTo(0, rise); capShape.closePath();
   for (const z of [HUT.minZ, HUT.maxZ]) {
-    const cap = new THREE.Mesh(new THREE.ShapeGeometry(capShape), logMat);
+    // ShapeGeometry UVs are in shape units, so a small repeat keeps board scale sane.
+    const cap = new THREE.Mesh(new THREE.ShapeGeometry(capShape),
+      new THREE.MeshLambertMaterial({ map: pineClone(0.3, 0.3) }));
     cap.position.set(midX, HUT_H, z);
     cap.castShadow = true;
     scene.add(cap);
